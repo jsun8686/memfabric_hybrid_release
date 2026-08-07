@@ -367,8 +367,8 @@ Result SmemBmEntry::Join(uint32_t flags)
 Result SmemBmEntry::Update(uint32_t flags)
 {
     SM_ASSERT_RETURN(inited_, SM_NOT_INITIALIZED);
-    const uint32_t retryTime = mf::MfEnvUtil::GetOptionalUintOrDefault(
-        "MF_SMEM_GROUP_RETRY_TIME", SMEM_GROUP_RETRY_TIME);
+    const uint32_t retryTime =
+        mf::MfEnvUtil::GetOptionalUintOrDefault("MF_SMEM_GROUP_RETRY_TIME", SMEM_GROUP_RETRY_TIME);
     for (uint32_t i = 0; i < retryTime; i++) {
         auto ret = globalGroup_->GroupUpdate();
         if (ret == SM_INNER_BUSY) {
@@ -417,8 +417,8 @@ Result SmemBmEntry::ExtendLocalMem(smem_bm_mem_type memType, uint64_t size)
     slices_.push_back(slice);
     sliceInfos_.push_back(info);
     // 3.group update
-    const uint32_t retryTime = mf::MfEnvUtil::GetOptionalUintOrDefault(
-        "MF_SMEM_GROUP_RETRY_TIME", SMEM_GROUP_RETRY_TIME);
+    const uint32_t retryTime =
+        mf::MfEnvUtil::GetOptionalUintOrDefault("MF_SMEM_GROUP_RETRY_TIME", SMEM_GROUP_RETRY_TIME);
     for (uint32_t i = 0; i < retryTime; i++) {
         auto ret = globalGroup_->GroupUpdate();
         if (ret == SM_INNER_BUSY) {
@@ -571,8 +571,8 @@ Result SmemBmEntry::RegisterMem(uint64_t addr, uint64_t size)
     auto iter = registedSlice_.find(addr);
     if (iter != registedSlice_.end()) {
         if (iter->second.first != size) {
-            SM_LOG_ERROR("RegisterMem size_mismatch: addr=0x" << std::hex << addr << std::dec
-                << " new_size=" << size << " existing_size=" << iter->second.first);
+            SM_LOG_ERROR("RegisterMem size_mismatch: addr=0x" << std::hex << addr << std::dec << " new_size=" << size
+                                                              << " existing_size=" << iter->second.first);
             return SM_ERROR;
         }
         SM_LOG_WARN("RegisterMem skip_dup: addr=0x" << std::hex << addr << std::dec << " size=" << size);
@@ -600,8 +600,8 @@ Result SmemBmEntry::UnRegisterMem(uint64_t addr)
     auto sz = iter->second.first;
     auto ret = hybm_free_local_memory(entity_, iter->second.second, 1, 0);
     if (ret != 0) {
-        SM_LOG_ERROR("UnRegisterMem free_fail: addr=0x" << std::hex << addr << std::dec
-                                                         << " size=" << sz << " ret=" << ret);
+        SM_LOG_ERROR("UnRegisterMem free_fail: addr=0x" << std::hex << addr << std::dec << " size=" << sz
+                                                        << " ret=" << ret);
         return SM_ERROR;
     }
     registedSlice_.erase(iter);
@@ -706,8 +706,9 @@ Result SmemBmEntry::CreateGlobalTeam(uint32_t rankSize, uint32_t rankId)
     SmemGroupChangeCallback joinFunc = std::bind(&SmemBmEntry::JoinHandle, this, std::placeholders::_1);
     SmemGroupChangeCallback updateFunc = std::bind(&SmemBmEntry::UpdateHandle, this, std::placeholders::_1);
     SmemGroupChangeCallback leaveFunc = std::bind(&SmemBmEntry::LeaveHandle, this, std::placeholders::_1);
-    SmemGroupOption opt = {rankSize,   rankId,   options_.controlOperationTimeout * SECOND_TO_MILLSEC, true, joinFunc,
-                           updateFunc, leaveFunc, leaveFunc};
+    SmemGroupOption opt = {rankSize,  rankId,   options_.controlOperationTimeout * SECOND_TO_MILLSEC,
+                           true,      joinFunc, updateFunc,
+                           leaveFunc, leaveFunc};
     SmemGroupEnginePtr group = SmemNetGroupEngine::Create(_configStore, opt);
     SM_ASSERT_RETURN(group != nullptr, SM_ERROR);
 

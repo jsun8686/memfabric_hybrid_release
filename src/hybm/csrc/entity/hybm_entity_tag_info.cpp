@@ -73,7 +73,7 @@ Result HybmEntityTagInfo::AddOneTagOpInfo(const std::string &tagOpInfo)
     auto key = tag1 + ":" + tag2;
     std::unique_lock lock(mutex_);
     tagOpInfo_[key] = (opType | it->second);
-    BM_LOG_INFO("Success to update tag1:" << tag1 << " tag2:" << tag2 << " op:" << tagOpInfo_[key]);
+    BM_LOG_DEBUG("Success to update tag1:" << tag1 << " tag2:" << tag2 << " op:" << tagOpInfo_[key]);
     return BM_OK;
 }
 

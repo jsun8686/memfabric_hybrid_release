@@ -235,8 +235,8 @@ int32_t MemEntityDefault::RegisterLocalMemory(const void *ptr, uint64_t size, ui
 
     auto addr = static_cast<uint64_t>(reinterpret_cast<ptrdiff_t>(ptr));
     bool isHbm = (addr >= HYBM_HBM_START_ADDR && addr < HYBM_HBM_END_ADDR);
-    BM_LOG_INFO("Hbm: " << isHbm << std::hex << ", addrs: 0x" << addr << ", start: 0x" << HYBM_HBM_START_ADDR
-                        << ", end: 0x" << HYBM_HBM_END_ADDR);
+    BM_LOG_DEBUG("Hbm: " << isHbm << std::hex << ", addrs: 0x" << addr << ", start: 0x" << HYBM_HBM_START_ADDR
+                         << ", end: 0x" << HYBM_HBM_END_ADDR);
     std::shared_ptr<MemSegment> segment = nullptr;
     // 只有trans场景才需要走hbmSegment_，bm场景优先走dramSegment_
     if (options_.scene == HYBM_SCENE_TRANS || dramSegment_ == nullptr) {
@@ -294,8 +294,8 @@ int32_t MemEntityDefault::FreeLocalMemory(hybm_mem_slice_t slice, uint32_t flags
     }
 
     if (memSlice == nullptr) {
-        BM_LOG_ERROR("FreeLocalMemory: cannot resolve slice id=" << slice
-                     << ", neither hbmSegment_ nor dramSegment_ owns it; VaManager entry may leak");
+        BM_LOG_ERROR("FreeLocalMemory: cannot resolve slice id="
+                     << slice << ", neither hbmSegment_ nor dramSegment_ owns it; VaManager entry may leak");
         return BM_OK;
     }
 
@@ -371,7 +371,7 @@ int32_t MemEntityDefault::ExportEntityExchangeInfo(ExchangeInfoWriter &desc, uin
             BM_LOG_ERROR("hbm segment is null, failed to export segment info in trans scene");
             return BM_ERROR;
         } else {
-            BM_LOG_INFO("hbm segment is null, skip export segment info");
+            BM_LOG_DEBUG("hbm segment is null, skip export segment info");
             return BM_OK;
         }
     }
@@ -446,10 +446,10 @@ int32_t MemEntityDefault::ExportSliceExchangeInfo(hybm_mem_slice_t slice, Exchan
     }
 
     if (options_.scene != HYBM_SCENE_TRANS) {
-        BM_LOG_INFO("Success to export slice rankId:" << transportKey.rankId << " addr:" << transportKey.address
-                                                      << " key:" << transportKey.key);
+        BM_LOG_DEBUG("Success to export slice rankId:" << transportKey.rankId << " addr:" << transportKey.address
+                                                       << " key:" << transportKey.key);
     } else {
-        BM_LOG_INFO("Success to export slice rankId:" << options_.rankId << " addr:" << realSlice->vAddress_);
+        BM_LOG_DEBUG("Success to export slice rankId:" << options_.rankId << " addr:" << realSlice->vAddress_);
     }
     return BM_OK;
 }
@@ -786,8 +786,8 @@ int32_t MemEntityDefault::CopyData(hybm_copy_params &params, hybm_data_copy_dire
 
     ret = dataOperator_->DataCopy(params, direction, options);
     if (ret != BM_OK) {
-        BM_LOG_ERROR("failed to copy data ret:" << ret << ", src:" << VaToStr(params.src) << ", dest:"
-                                                << VaToStr(params.dest) << ", size:" << params.dataSize);
+        BM_LOG_ERROR("failed to copy data ret:" << ret << ", src:" << VaToStr(params.src)
+                                                << ", dest:" << VaToStr(params.dest) << ", size:" << params.dataSize);
     }
     return ret;
 }
@@ -997,8 +997,8 @@ int32_t MemEntityDefault::ImportForTransportPrecheck(const ExchangeInfoReader de
 
         std::unique_lock<std::mutex> uniqueLock{importMutex_};
         importedMemories_[transportKey.rankId].insert(transportKey.key);
-        BM_LOG_INFO("Success to import slice rankId:" << transportKey.rankId << " addr:" << std::hex
-                                                      << transportKey.address);
+        BM_LOG_DEBUG("Success to import slice rankId:" << transportKey.rankId << " addr:" << std::hex
+                                                       << transportKey.address);
 
         if (ret != 0) {
             BM_LOG_ERROR("read info for transport failed: " << ret);
@@ -1152,7 +1152,7 @@ Result MemEntityDefault::InitTransManager()
     }
 
     if (options_.rankCount <= 1) {
-        BM_LOG_INFO("rank total count : " << options_.rankCount << ", no transport.");
+        BM_LOG_DEBUG("rank total count : " << options_.rankCount << ", no transport.");
         return BM_OK;
     }
 

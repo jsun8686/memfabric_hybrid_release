@@ -77,7 +77,7 @@ Result RdmaTransportManager::OpenDevice(const TransportOptions &options)
         BM_LOG_WARN("aclrtGetPhyDevIdByLogicDevId ret=" << ret << " use logicId=" << logicId);
         phyId = logicId;
     }
-    BM_LOG_INFO("aclrtGetPhyDevIdByLogicDevId: userId=" << userId << ", logicId=" << logicId << ", phyId=" << phyId);
+    BM_LOG_DEBUG("aclrtGetPhyDevIdByLogicDevId: userId=" << userId << ", logicId=" << logicId << ", phyId=" << phyId);
     deviceId_ = static_cast<uint32_t>(phyId);
     rankId_ = options.rankId;
     rankCount_ = options.rankCount;
@@ -353,7 +353,8 @@ Result RdmaTransportManager::WaitQpReady()
         std::this_thread::sleep_for(QP_READY_CHECK_INTERVAL);
     }
     BM_LOG_ERROR("CheckQpReady timeout: " << (std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count())
-                                          << "ms after " << tries << " tries.");
+                                          << "ms after " << tries << " tries, error connections status: "
+                                          << qpManager_->GetErrorConnectionsStatus(rankIds));
     return BM_TIMEOUT;
 }
 
@@ -467,8 +468,10 @@ void RdmaTransportManager::BuildTable(std::string &str, std::string &ip, uint32_
     std::string tmp = R"(",
       "device": [
         {
-          "device_id": ")" + std::to_string(devId) + R"(",
-          "device_ip": ")" + ip;
+          "device_id": ")" +
+                      std::to_string(devId) + R"(",
+          "device_ip": ")" +
+                      ip;
 
     str = R"({
   "status": "completed",
@@ -476,7 +479,8 @@ void RdmaTransportManager::BuildTable(std::string &str, std::string &ip, uint32_
   "server_count": "2",
   "server_list": [
     {
-      "server_id": "server1)" + tmp + R"(",
+      "server_id": "server1)" +
+          tmp + R"(",
           "rank_id": "0"
         }
       ]
@@ -828,8 +832,8 @@ int RdmaTransportManager::ConvertHccpMrInfo(const TransportMemoryRegion &mr, Hcc
     // need register: dram except gvm
     if ((mr.flags & REG_MR_FLAG_DRAM) || (mr.flags & REG_MR_FLAG_ACL_DRAM)) {
         if (addr % SMALL_PAGE_SIZE != 0) {
-            BM_LOG_ERROR("DRAM buffer address: " << std::hex << addr <<
-                " is not aligned to 4K, HalHostRegister will fail");
+            BM_LOG_ERROR("DRAM buffer address: " << std::hex << addr
+                                                 << " is not aligned to 4K, HalHostRegister will fail");
             return BM_INVALID_PARAM;
         }
 
@@ -866,8 +870,8 @@ void RdmaTransportManager::OptionsToRankMRs(const HybmTransPrepareOptions &optio
             keyUnion.commonKey = key;
             auto &devKey = keyUnion.deviceKey;
             uint64_t dva = HybmVaManager::GetInstance().TransformVa(devKey.address, HVM_GVA, HVM_DVA);
-            BM_LOG_INFO("query memory key rank:" << node << " gva:" << std::hex
-                        << keyUnion.deviceKey.address << " dva:" << dva << " size:" << keyUnion.deviceKey.size);
+            BM_LOG_DEBUG("query memory key rank:" << node << " gva:" << std::hex << keyUnion.deviceKey.address
+                                                  << " dva:" << dva << " size:" << keyUnion.deviceKey.size);
             if (dva != 0) {
                 devKey.address = dva;
             }
@@ -876,7 +880,7 @@ void RdmaTransportManager::OptionsToRankMRs(const HybmTransPrepareOptions &optio
                 pos.emplace(devKey.address, devKey);
             } else {
                 BM_LOG_DEBUG("OptionsToRankMRs devKey address: " << (void *)(ptrdiff_t)devKey.address
-                                                                << " already exists, skip emplace.");
+                                                                 << " already exists, skip emplace.");
                 continue;
             }
             if (devKey.notifyAddr != 0ULL) {
