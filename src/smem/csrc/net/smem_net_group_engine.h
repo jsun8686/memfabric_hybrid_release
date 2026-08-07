@@ -122,7 +122,7 @@ public:
 
     Result GroupBarrier(const char *key, uint32_t rankSize, uint32_t rankId);
 
-    Result GroupGatherResult(int32_t localRet, int32_t &totalRet);
+    Result GroupGatherResult(int32_t localRet, std::vector<std::pair<int, int>> &errList);
 
     Result GroupAllGather(const char *sendBuf, uint32_t sendSize, char *recvBuf, uint32_t recvSize);
 
@@ -134,7 +134,7 @@ public:
     Result GroupGatherPrefixKey(uint32_t dstRank, std::string &update,
                                 std::unordered_map<uint32_t, std::string> &retMap);
 
-    Result TryRemovePrefixKey(uint32_t rank);
+    Result TryRemovePrefixKey(uint32_t rank, bool printLog = true);
 
     Result GroupBroadcastExit(int status);
 
