@@ -30,7 +30,7 @@ namespace smem {
 std::atomic<uint64_t> StoreWaitContext::idGen_{1UL};
 constexpr uint16_t MAX_U16_INDEX = 65535;
 constexpr uint64_t SERVER_RECOVER_TIME = 5 * 1000 * 1000; // 5s
-constexpr uint32_t HEARTBEAT_TIMEOUT = 3;
+constexpr uint32_t HEARTBEAT_TIMEOUT = 30;
 constexpr int32_t EPHEMERAL_KEY_TTL_SEC = 5;
 constexpr int32_t PERSISTENT_KEY_TTL_SEC = 0;
 constexpr size_t MAX_WRITE_TOTAL_SIZE = MAX_VALUE_SIZE * 16ULL;
@@ -276,6 +276,10 @@ Result AccStoreServer::LinkBrokenHandler(const uint32_t linkId) noexcept
     std::string autoRankingStr = autoRankingStr_ + std::to_string(linkId);
     std::unique_lock<std::mutex> lockGuard{storeMutex_};
     std::vector<uint8_t> outValue;
+
+    if (externalBrokenHandler_ != nullptr) {
+        externalBrokenHandler_(linkId, backend_);
+    }
     auto ret = backend_->Get(autoRankingStr, outValue);
     if (ret == SUCCESS) {
         std::copy(outValue.begin(), outValue.end(), trans.data);
@@ -286,9 +290,8 @@ Result AccStoreServer::LinkBrokenHandler(const uint32_t linkId) noexcept
         STORE_LOG_INFO("link broken, linkId: " << linkId << " remove rankId: " << rankId);
     }
     heartBeatMap_.erase(linkId);
-    if (externalBrokenHandler_ != nullptr) {
-        externalBrokenHandler_(linkId, backend_);
-    } else if (aliveRankSet_.empty()) {
+
+    if (aliveRankSet_.empty()) {
         STORE_LOG_INFO("all client link broken, will clear data");
         rankIndex_ = 0;
         backend_->Clear();
