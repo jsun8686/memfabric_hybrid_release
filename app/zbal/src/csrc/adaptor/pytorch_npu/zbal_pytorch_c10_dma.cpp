@@ -122,6 +122,9 @@ const std::string kMinDriverVersion = "25.0.RC1";     // minimum driver version 
 const std::string kCannModule = "CANN";               // cann module name
 
 static char SHAREABLE_HANDLE_VERSION = 1;
+#ifndef ACL_IPC_HANDLE_SIZE
+#define ACL_IPC_HANDLE_SIZE 65
+#endif
 enum ShareableHandleType : char { SHAREABLE_NPU_MALLOC = 'c', SHAREABLE_NPU_EXPANDABLE_SEGMENT = 'e' };
 
 using StatTypes = std::array<bool, static_cast<size_t>(StatType::NUM_TYPES)>;
