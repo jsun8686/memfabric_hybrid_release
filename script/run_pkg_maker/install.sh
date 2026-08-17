@@ -262,22 +262,35 @@ function check_path()
 }
 
 function get_ascend_version() {
-    cnt=$(lspci | grep Processing | grep Huawei | grep d802 -c)
-    if [ "${cnt}" -gt 0 ]; then
-        ascend_version="A2"
+    local soc_name=""
+    # Prefer npu-smi to get the SoC name (still valid when lspci is unreliable in container/host)
+    if command -v npu-smi &>/dev/null; then
+        # some npu-smi versions report the chip as bare "910B3" without the "Ascend" prefix
+        soc_name=$(npu-smi info 2>/dev/null | grep -oE "Ascend(9|3)[0-9]+[A-Za-z0-9]*" | head -n1)
+        if [ -z "${soc_name}" ]; then
+            soc_name=$(npu-smi info 2>/dev/null | grep -oE "(9|3)[0-9]{2}[A-Za-z0-9]*" | grep -E "^(910|950|310)" | head -n1)
+        fi
+    fi
+    if [ -n "${soc_name}" ]; then
+        case "${soc_name}" in
+             *950*|*Ascend910_95*)
+                 ascend_version="A5" ;;
+             *910B*)
+                 ascend_version="A2" ;;
+             *910*)
+                 ascend_version="A3" ;;
+             *)
+                ascend_version="none" ;;
+        esac
         return
     fi
-
-    cnt=$(lspci | grep Processing | grep Huawei | grep d803 -c)
-    if [ "${cnt}" -gt 0 ]; then
-        ascend_version="A3"
-        return
-    fi
-
-    cnt=$(lspci | grep Processing | grep Huawei | grep d806 -c)
-    if [ "${cnt}" -gt 0 ]; then
+    # lspci fallback (PCI device IDs: d802=A2, d803=A3, d806=A5)
+    if [ $(lspci 2>/dev/null | grep -ci "Processing.*Huawei.*d806") -gt 0 ]; then
         ascend_version="A5"
-        return
+    elif [ $(lspci 2>/dev/null | grep -ci "Processing.*Huawei.*d803") -gt 0 ]; then
+        ascend_version="A3"
+    elif [ $(lspci 2>/dev/null | grep -ci "Processing.*Huawei.*d802") -gt 0 ]; then
+        ascend_version="A2"
     fi
 }
 
