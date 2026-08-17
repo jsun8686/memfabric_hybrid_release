@@ -23,6 +23,11 @@
 | `ACCLINK_CERT_CHECK_AHEAD_DAYS` | 30 | 证书提前检查天数，在证书过期前多少天开始告警，有效范围1-365。 |
 | `MF_CONFIG_STORE_PORT_START` | 9000 | Config Store可用端口范围起始值，与`MF_CONFIG_STORE_PORT_END`配合使用。TransferEngine在`session_id`未指定端口（如`ip`/`ip:0`）时自动选端口亦使用此范围。 |
 | `MF_CONFIG_STORE_PORT_END` | 65535 | Config Store可用端口范围结束值。 |
+| `MF_GROUP_JOIN_MAX_TIMEOUT` | 600 | Group Join最大超时时间（秒）。在`smem_trans`和`smem_bm`的Join/GroupUpdate流程中控制等待集群加入的超时上限。 |
+| `MF_SMEM_GROUP_RETRY_TIME` | 10 | Group Update重试次数。在`smem_trans`和`smem_bm`的Update流程中控制`GroupUpdate`的重试次数，每次重试间隔1秒。 |
+| `MF_QP_READY_CHECK_TIMEOUT_BASE` | 100 | Device RDMA QP（Queue Pair）就绪检查超时基础值（秒）。在Device RDMA传输模式下，等待所有rank的QP就绪的总超时基数，实际超时为基础值+每rank额外100ms。 |
+| `HCCL_RDMA_TC` | 132 | Device RDMA Traffic Class（流量类别），必须为4的整数倍，有效范围0-255。用于NPU Device RDMA传输的QoS配置。 |
+| `HCCL_RDMA_SL` | 4 | Device RDMA Service Level（服务等级），有效范围0-7。用于NPU Device RDMA传输的QoS配置。 |
 
 ## 构建时环境变量
 
@@ -35,6 +40,7 @@
 | `BUILD_MODE` | RELEASE | 构建模式。可选值：RELEASE、DEBUG、ASAN。 |
 | `ENABLE_PTRACER` | ON | 是否启用ptracer性能打点工具。 |
 | `XPU_TYPE` | NPU | 异构设备类型。可选值：NPU、GPU、NONE。 |
+| `IS_MANYLINUX` | FALSE | 是否构建manylinux兼容的wheel包。设为ON时，使用auditwheel修复wheel包以兼容manylinux平台。**仅构建Python whl包时生效。** |
 
 ## 安装脚本环境变量
 
