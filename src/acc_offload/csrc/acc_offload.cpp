@@ -19,7 +19,7 @@ OFFLOAD_API int32_t offload_init(const offload_config_t &config)
 {
     auto &entry = AccOffloadLocalDramEntry::Instance();
     auto ret = entry.Initialize(config);
-    OFFLOAD_LOG_INFO("offload_init ret: " << ret  << ", deviceId: " << config.deviceId << ", size: " << config.size);
+    OFFLOAD_LOG_TRACE("offload_init ret: " << ret << ", deviceId: " << config.deviceId << ", size: " << config.size);
     return ret;
 }
 
@@ -27,7 +27,7 @@ OFFLOAD_API void offload_uninit()
 {
     auto &entry = AccOffloadLocalDramEntry::Instance();
     entry.UnInitalize();
-    OFFLOAD_LOG_INFO("offload_uninit finished");
+    OFFLOAD_LOG_TRACE("offload_uninit finished");
 }
 
 OFFLOAD_API uint64_t offload_malloc(uint64_t size, uint64_t flags)

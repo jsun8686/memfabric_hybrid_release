@@ -1071,7 +1071,7 @@ int32_t SmemNetGroupEngine::JoinLeaveEventProcess()
                 ret = option_.leaveCb(groupInfo_.targetRank);
             }
             if (joined_ && groupInfo_.targetRank == option_.rank) {
-                SM_LOG_INFO("leave self, rank:" << option_.rank << " event:" << groupInfo_.curEvent);
+                SM_LOG_TRACE("leave self, rank:" << option_.rank << " event:" << groupInfo_.curEvent);
                 groupStoped_.store(false);
             }
             break;
@@ -1345,7 +1345,7 @@ Result SmemNetGroupEngine::GroupJoin()
 
         SmemGroupInfo info = GenerateInfo(JOIN_EVENT, option_.rank, old);
         if (!UpdateBitmapFromRank(info, option_.rank)) { // has same rank joined
-            SM_LOG_INFO("found old rank, try remove it, rank:" << option_.rank);
+            SM_LOG_TRACE("found old rank, try remove it, rank:" << option_.rank);
             DoLinkDownOnce(option_.rank);
             usleep(SMEM_GROUP_SLEEP_TIMEOUT);
             continue;
@@ -1454,7 +1454,7 @@ Result SmemNetGroupEngine::GroupLeave()
     SM_ASSERT_RETURN(store_ != nullptr, SM_INVALID_PARAM);
     SM_ASSERT_RETURN(option_.dynamic, SM_INVALID_PARAM);
     SM_ASSERT_RETURN(joined_, SM_NOT_STARTED);
-    SM_LOG_INFO("do leave by user, rank:" << option_.rank);
+    SM_LOG_TRACE("do leave by user, rank:" << option_.rank);
 
     std::string old;
     int retry_count = 0;
@@ -1538,7 +1538,7 @@ int32_t SmemNetGroupEngine::LinkReconnectHandler()
     std::string val((char *)&info, SMEM_GROUP_INFO_SIZE);
     auto ret = store_->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, val, old);
     if (ret == SM_OK) { // will cas ok if key not exist
-        SM_LOG_INFO("set group info success, rank:" << option_.rank);
+        SM_LOG_TRACE("set group info success, rank:" << option_.rank);
     } else {
         info = *reinterpret_cast<SmemGroupInfo *>(const_cast<char *>(old.c_str())); // update last info
     }
@@ -1554,7 +1554,7 @@ int32_t SmemNetGroupEngine::LinkReconnectHandler()
                            SM_ERROR);
     }
 
-    SM_LOG_INFO("reconnect success, rank:" << option_.rank << " " << info);
+    SM_LOG_TRACE("reconnect success, rank:" << option_.rank << " " << info);
     return SM_OK;
 }
 

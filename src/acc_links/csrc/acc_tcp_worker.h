@@ -73,7 +73,7 @@ inline Result AccTcpWorker::ModifyLink(const AccTcpLinkComplexDefaultPtr &link, 
 {
     ASSERT_RETURN(link.Get(), ACC_INVALID_PARAM);
 
-    LOG_TRACE("Try to modify link " << link->ShortName() << " in sock worker " << options_.Name() << " with event "
+    LOG_DEBUG("Try to modify link " << link->ShortName() << " in sock worker " << options_.Name() << " with event "
                                     << events);
 
     struct epoll_event evNewFd{};
@@ -145,7 +145,7 @@ inline Result AccTcpWorker::ProcessEvent(struct epoll_event &event) noexcept
         return ACC_OK;
     }
 
-    LOG_TRACE("Receive link " << link->id_ << " event " << event.events); /* continue to process next event */
+    LOG_DEBUG("Receive link " << link->id_ << " event " << event.events); /* continue to process next event */
     return ACC_OK;
 }
 

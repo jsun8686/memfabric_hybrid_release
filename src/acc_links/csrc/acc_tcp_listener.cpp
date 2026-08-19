@@ -130,7 +130,7 @@ void AccTcpListener::Stop(bool afterFork) noexcept
 void AccTcpListener::RunInThread() noexcept
 {
     pthread_setname_np(pthread_self(), "acc_accept_poll");
-    LOG_INFO("Acc listener accept thread for " << NameAndPort() << " start ...");
+    LOG_TRACE("Acc listener accept thread for " << NameAndPort() << " start ...");
     threadStarted_.store(true);
 
     while (!needStop_) {
@@ -151,7 +151,7 @@ void AccTcpListener::RunInThread() noexcept
                 continue;
             }
 
-            struct sockaddr_in addressIn {};
+            struct sockaddr_in addressIn{};
             socklen_t len = sizeof(addressIn);
             auto fd = ::accept(listenFd_, reinterpret_cast<struct sockaddr *>(&addressIn), &len);
             if (fd < 0) {
@@ -176,7 +176,7 @@ void AccTcpListener::RunInThread() noexcept
         }
     }
 
-    LOG_INFO("Working thread for AccTcpStore listener at " << NameAndPort() << " exiting");
+    LOG_TRACE("Working thread for AccTcpStore listener at " << NameAndPort() << " exiting");
 }
 
 void AccTcpListener::ProcessNewConnection(int fd, struct sockaddr_in addressIn) noexcept
@@ -204,7 +204,7 @@ void AccTcpListener::ProcessNewConnection(int fd, struct sockaddr_in addressIn) 
         }
     }
 
-    LOG_INFO("Connected from " << ipPort << " successfully, ssl " << (enableTls_ ? "enable" : "disable"));
+    LOG_TRACE("Connected from " << ipPort << " successfully, ssl " << (enableTls_ ? "enable" : "disable"));
     auto newLink = AccMakeRef<AccTcpLinkComplexDefault>(fd, ipPort, AccTcpLinkDefault::NewId(), ssl);
     if (newLink == nullptr) {
         LOG_ERROR("Failed to create listener tcp link object, probably out of memory");

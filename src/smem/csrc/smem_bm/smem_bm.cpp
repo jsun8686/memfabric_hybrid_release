@@ -98,7 +98,7 @@ SMEM_API int32_t smem_bm_init(const char *storeURL, uint32_t worldSize, uint16_t
     }
 
     g_smemBmInited = true;
-    SM_LOG_INFO("smem_bm_init success. " << " config_ip: " << storeURL);
+    SM_LOG_TRACE("smem_bm_init success. " << " config_ip: " << storeURL);
     return SM_OK;
 }
 
@@ -118,7 +118,7 @@ SMEM_API void smem_bm_uninit(uint32_t flags)
     SmemBmEntryManager::Instance().Destroy();
     hybm_uninit();
     g_smemBmInited = false;
-    SM_LOG_INFO("smem_bm_uninit finished");
+    SM_LOG_TRACE("smem_bm_uninit finished");
 }
 
 SMEM_API uint32_t smem_bm_get_rank_id()
@@ -238,11 +238,11 @@ SMEM_API smem_bm_t smem_bm_create2(uint32_t id, const smem_bm_create_option_t *o
     const uint64_t totalAddrSpace =
         (option->maxDramSize + option->maxHbmSize) * static_cast<uint64_t>(options.rankCount);
     if (!option->enable56BitsGva && totalAddrSpace > SMEM_56BITS_GVA_REQUIRED_THRESHOLD) {
-        SM_LOG_AND_SET_LAST_ERROR(
-            "total address space (" << totalAddrSpace << " B) exceeds 32TB but enable56BitsGva is false. "
-            << "Please set enable56BitsGva = true, "
-            << "maxDram=" << option->maxDramSize << ", maxHbm=" << option->maxHbmSize
-            << ", rankCount=" << options.rankCount);
+        SM_LOG_AND_SET_LAST_ERROR("total address space ("
+                                  << totalAddrSpace << " B) exceeds 32TB but enable56BitsGva is false. "
+                                  << "Please set enable56BitsGva = true, "
+                                  << "maxDram=" << option->maxDramSize << ", maxHbm=" << option->maxHbmSize
+                                  << ", rankCount=" << options.rankCount);
         return nullptr;
     }
     options.enable56BitsGva = option->enable56BitsGva;

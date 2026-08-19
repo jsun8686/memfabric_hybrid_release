@@ -29,13 +29,13 @@ bool IsValidBackendOp(const smem_conf_store_backend_op_t &backendOp)
            backendOp.put != nullptr && backendOp.get != nullptr && backendOp.remove != nullptr &&
            backendOp.lock != nullptr && backendOp.try_lock != nullptr && backendOp.unlock != nullptr;
 }
-}
+} // namespace
 
 SMEM_API int32_t smem_init(uint32_t flags)
 {
     using namespace ock::smem;
     g_smemInited = true;
-    SM_LOG_INFO("smem init successfully, " << LIB_VERSION);
+    SM_LOG_TRACE("smem init successfully, " << LIB_VERSION);
     return SM_OK;
 }
 

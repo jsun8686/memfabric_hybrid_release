@@ -27,14 +27,15 @@
 #define ADAPTER_LOG_INFO(ARGS)  MF_OUT_LOG("[ADAPTER ", ock::mf::INFO_LEVEL, ARGS)
 #define ADAPTER_LOG_WARN(ARGS)  MF_OUT_LOG("[ADAPTER ", ock::mf::WARN_LEVEL, ARGS)
 #define ADAPTER_LOG_ERROR(ARGS) MF_OUT_LOG("[ADAPTER ", ock::mf::ERROR_LEVEL, ARGS)
+#define ADAPTER_LOG_TRACE(ARGS) MF_OUT_LOG("[ADAPTER ", ock::mf::TRACE_LEVEL, ARGS)
 
 // if ARGS is false, print error
-#define ADAPTER_ASSERT_RETURN(ARGS, msg, RET)     \
-    do {                                           \
-        if (__builtin_expect(!(ARGS), 0) != 0) {   \
-            ADAPTER_LOG_ERROR(msg);                \
-            return RET;                            \
-        }                                          \
+#define ADAPTER_ASSERT_RETURN(ARGS, msg, RET)    \
+    do {                                         \
+        if (__builtin_expect(!(ARGS), 0) != 0) { \
+            ADAPTER_LOG_ERROR(msg);              \
+            return RET;                          \
+        }                                        \
     } while (0)
 
 #define ADAPTER_ASSERT_RET_VOID(ARGS)              \
