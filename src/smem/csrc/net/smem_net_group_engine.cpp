@@ -880,7 +880,15 @@ uint32_t SmemNetGroupEngine::ReWatchLinkDown()
     uint32_t wid;
     auto ret = store_->Watch(
         WatchRankType::WATCH_RANK_LINK_DOWN,
-        [this](WatchRankType type, uint32_t downRankId) { RemoteRankLinkDownCb(downRankId); }, wid);
+        [this](WatchRankType type, uint32_t downRankId, Result ret) {
+            if (ret != SM_OK) {
+                SM_LOG_WARN_LIMIT("watch link down event failed, ret: " << ret);
+                linkListenSignal_.OperateInLock([this, ret]() { linkCtx_.ret = ret; }, true);
+                return;
+            }
+            RemoteRankLinkDownCb(downRankId);
+        },
+        wid);
     if (ret != SM_OK || wid == UINT32_MAX) {
         SM_LOG_WARN_LIMIT("group watch failed, ret: " << ret);
         usleep(SMEM_GROUP_SLEEP_TIMEOUT);

@@ -593,7 +593,7 @@ HaConfigStore::Watch(const std::string &key,
     return clientDelegate_->Watch(key, notify, wid);
 }
 
-Result HaConfigStore::Watch(WatchRankType type, const std::function<void(WatchRankType, uint32_t)> &notify,
+Result HaConfigStore::Watch(WatchRankType type, const std::function<void(WatchRankType, uint32_t, Result)> &notify,
                             uint32_t &wid) noexcept
 {
     SM_ASSERT_RETURN(clientDelegate_ != nullptr, SM_ERROR);
