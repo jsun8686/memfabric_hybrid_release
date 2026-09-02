@@ -30,7 +30,6 @@ using namespace mf;
 const std::string SMEM_GROUP_SET_STR = "ok";
 const std::string SMEM_GROUP_EXIT_KEY = "EXIT";
 const std::string SMEM_EXCHANGE_INFO_KEY = "BMEX_";
-const std::string SMEM_GROUP_LISTEN_EVENT_KEY = "EVENT";
 const std::string SMEM_GROUP_CAS_ALLOC_NUM_KEY = "AT_NUM";
 constexpr uint32_t SMEM_ALLOC_NUM_SIZE = SMEM_SHM_ATOMIC_NUM_LIMIT;
 constexpr uint32_t SMEM_ALLOC_NUM_BUF_LEN = (SMEM_ALLOC_NUM_SIZE + 7) / 8; // uint8_t
@@ -862,10 +861,11 @@ bool SmemNetGroupEngine::TryUpdateInfo(SmemGroupInfo &info)
 uint32_t SmemNetGroupEngine::ReWatchEvent()
 {
     uint32_t wid;
-    auto ret = store_->Watch(SMEM_GROUP_LISTEN_EVENT_KEY,
-                             std::bind(&SmemNetGroupEngine::GroupWatchCb, this, std::placeholders::_1,
-                                       std::placeholders::_2, std::placeholders::_3),
-                             wid);
+    // The group event key lives on the core store, bypassing the prefix store
+    auto ret = store_->GetCoreStore()->Watch(SMEM_GROUP_LISTEN_EVENT_KEY,
+                                             std::bind(&SmemNetGroupEngine::GroupWatchCb, this, std::placeholders::_1,
+                                                       std::placeholders::_2, std::placeholders::_3),
+                                             wid);
     if (ret != SM_OK || wid == UINT32_MAX) {
         SM_LOG_WARN_LIMIT("group watch failed, ret: " << ret << ", wid: " << wid);
         usleep(SMEM_GROUP_SLEEP_TIMEOUT);
@@ -1116,7 +1116,7 @@ Result SmemNetGroupEngine::DoLinkDownOnce(uint32_t rankId)
     SM_LOG_DEBUG("remove generate_info:" << info << " base:" << groupInfo_);
     std::string val((char *)&info, SMEM_GROUP_INFO_SIZE);
     if (info.version & 1) {
-        int ret = store_->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, val, old);
+        int ret = store_->GetCoreStore()->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, val, old);
         if (ret != StoreErrorCode::RESTORE) {
             if (ret != SM_OK) {
                 SM_LOG_ERROR("cas event failed! ret:" << ret);
@@ -1144,7 +1144,7 @@ wait_done:
     info = GenerateInfo(NULL_EVNET, rankId, old);
     SM_LOG_DEBUG("generate info:" << info);
     std::string str((char *)&info, SMEM_GROUP_INFO_SIZE);
-    auto ret2 = store_->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, str, old);
+    auto ret2 = store_->GetCoreStore()->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, str, old);
     if (ret2 != SM_OK) {
         SM_LOG_ERROR("reset group event failed, ret: " << ret2 << " expect:" << info);
     } else {
@@ -1320,7 +1320,7 @@ void SmemNetGroupEngine::TryCleanOldEvent()
             ClearBitmapForRank(info, oldInfo.targetRank);
         }
         std::string val((char *)&info, SMEM_GROUP_INFO_SIZE);
-        ret = store_->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, val, old);
+        ret = store_->GetCoreStore()->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, val, old);
         if (ret == SM_OK || ret == RESTORE) {
             // nothing
         }
@@ -1361,7 +1361,7 @@ Result SmemNetGroupEngine::GroupJoin()
         std::string val((char *)&info, SMEM_GROUP_INFO_SIZE);
         SM_LOG_DEBUG("join generate_info:" << info << " base:" << groupInfo_);
         if (info.version & 1) {
-            auto ret = store_->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, val, old);
+            auto ret = store_->GetCoreStore()->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, val, old);
             if (ret == SM_OK) { // will cas ok if key not exist
                 lastSubmitVersion_.store(info.version);
                 break;
@@ -1386,7 +1386,7 @@ Result SmemNetGroupEngine::GroupJoin()
     }
     SM_LOG_DEBUG("generate info:" << info);
     std::string str((char *)&info, SMEM_GROUP_INFO_SIZE);
-    auto ret2 = store_->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, str, old);
+    auto ret2 = store_->GetCoreStore()->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, str, old);
     if (ret2 != SM_OK) {
         SM_LOG_ERROR("reset group event failed, ret: " << ret2 << " expect:" << info);
     } else {
@@ -1420,7 +1420,7 @@ Result SmemNetGroupEngine::GroupUpdate()
         std::string val((char *)&info, SMEM_GROUP_INFO_SIZE);
         SM_LOG_DEBUG("update generate_info:" << info << " base:" << groupInfo_);
         if (info.version & 1) {
-            auto ret = store_->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, val, old);
+            auto ret = store_->GetCoreStore()->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, val, old);
             if (ret == SM_OK) { // will cas ok if key not exist
                 lastSubmitVersion_.store(info.version);
                 break;
@@ -1444,7 +1444,7 @@ Result SmemNetGroupEngine::GroupUpdate()
     }
     SM_LOG_DEBUG("update generate info:" << info);
     std::string str((char *)&info, SMEM_GROUP_INFO_SIZE);
-    auto ret2 = store_->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, str, old);
+    auto ret2 = store_->GetCoreStore()->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, str, old);
     if (ret2 != SM_OK) {
         SM_LOG_ERROR("reset group event failed, ret: " << ret2 << " expect:" << info);
     } else {
@@ -1477,7 +1477,7 @@ Result SmemNetGroupEngine::GroupLeave()
         std::string val((char *)&info, SMEM_GROUP_INFO_SIZE);
         SM_LOG_DEBUG("leave generate_info:" << info << " base:" << groupInfo_);
         if (info.version & 1) {
-            auto ret = store_->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, val, old);
+            auto ret = store_->GetCoreStore()->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, val, old);
             if (ret == SM_OK) {
                 lastSubmitVersion_.store(info.version);
                 break;
@@ -1501,7 +1501,7 @@ Result SmemNetGroupEngine::GroupLeave()
     SmemGroupInfo info = GenerateInfo(NULL_EVNET, option_.rank, old);
     SM_LOG_DEBUG("generate info:" << info);
     std::string str((char *)&info, SMEM_GROUP_INFO_SIZE);
-    auto ret2 = store_->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, str, old);
+    auto ret2 = store_->GetCoreStore()->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, str, old);
     if (ret2 != SM_OK) {
         SM_LOG_ERROR("reset group event failed, ret: " << ret2 << " expect:" << info);
     } else {
@@ -1544,7 +1544,7 @@ int32_t SmemNetGroupEngine::LinkReconnectHandler()
 
     std::string old;
     std::string val((char *)&info, SMEM_GROUP_INFO_SIZE);
-    auto ret = store_->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, val, old);
+    auto ret = store_->GetCoreStore()->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, val, old);
     if (ret == SM_OK) { // will cas ok if key not exist
         SM_LOG_TRACE("set group info success, rank:" << option_.rank);
     } else {

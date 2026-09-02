@@ -54,8 +54,8 @@ HaConfigStore::HaConfigStore(StoreBackendPtr backend, TcpConfigStorePtr clientDe
       clientDelegate_(std::move(clientDelegate))
 {
     (void)instanceId;
-    SM_LOG_DEBUG("HaConfigStore constructing, endpoints: "
-                 << endpoints << ", worldSize: " << worldSize << ", backendLockName: " << backendLockName_);
+    SM_LOG_DEBUG("HaConfigStore constructing, endpoints: " << endpoints << ", worldSize: " << worldSize
+                                                           << ", backendLockName: " << backendLockName_);
 }
 
 void HaConfigStore::Uninitialize() noexcept

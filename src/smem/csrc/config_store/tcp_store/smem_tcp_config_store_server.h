@@ -70,11 +70,14 @@ private:
     static std::atomic<uint64_t> idGen_;
 };
 
+/*
+ * Server state machine
+ */
 enum StoreServerState : uint32_t {
-    SS_INITED,
-    SS_RECOVER,
-    SS_NORMAL,
-    SS_EXITED
+    SS_INITED,  // startup, waiting for the first link
+    SS_RECOVER, // first link arrived, only reconnect links are accepted
+    SS_NORMAL,  // recovery window (SERVER_RECOVER_TIME) passed without reconnect
+    SS_EXITED   // server has shut down
 };
 
 class AccStoreServer : public SmReferable {
@@ -132,6 +135,11 @@ private:
     Result LaunchCleanupThread();
     void CleanupStaleRanks() noexcept;
     bool CanReceiveNewLink();
+    /*
+     * Called when the recovery window expires: reads the group event and notifies
+     * ranks that are in the group bitmap but did not reconnect
+     */
+    void RecoverFinished() noexcept;
 
     static constexpr uint32_t MAX_KEY_LEN_SERVER = 2048U;
     static constexpr uint32_t STORE_WAIT_TIMEOUT_SEC = 5U;
@@ -162,9 +170,10 @@ private:
 
     const std::string listenIp_;
     const uint16_t listenPort_;
-    bool skipRecover_;
     uint32_t worldSize_;
     uint32_t rankIndex_{0};
+    bool skipRecover_;
+    uint64_t lastReconnectTime_{0}; // us, refreshed by each reconnect, drives RECOVER -> NORMAL transition
     std::unordered_set<uint32_t> aliveRankSet_;
     ConfigStoreServerBrokenHandler externalBrokenHandler_{nullptr};
     std::unordered_map<uint32_t, int64_t> heartBeatMap_;
