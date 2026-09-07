@@ -1018,7 +1018,7 @@ int32_t SmemNetGroupEngine::JoinLeaveEventProcess()
     int32_t ret = SM_OK;
     switch (groupInfo_.curEvent) {
         case JOIN_EVENT: {
-            if ((joined_ || groupInfo_.targetRank == option_.rank) && option_.joinCb != nullptr) {
+            if (TestBitmapForRank(option_.rank) && option_.joinCb != nullptr) {
                 if (currentStopCount_.load() > 0) {
                     SM_LOG_DEBUG("now join event has stop. version:" << groupInfo_.version);
                     return SM_OK;
@@ -1040,7 +1040,7 @@ int32_t SmemNetGroupEngine::JoinLeaveEventProcess()
             break;
         }
         case UPDATE_EVENT: {
-            if (joined_ && option_.updateCb != nullptr) {
+            if (TestBitmapForRank(option_.rank) && option_.updateCb != nullptr) {
                 if (currentStopCount_.load() > 0) {
                     SM_LOG_DEBUG("now update event has stop. version:" << groupInfo_.version);
                     return SM_OK;
