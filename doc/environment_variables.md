@@ -29,6 +29,10 @@
 | `MF_QP_READY_CHECK_TIMEOUT_BASE` | 100 | Device RDMA QP（Queue Pair）就绪检查超时基础值（秒）。在Device RDMA传输模式下，等待所有rank的QP就绪的总超时基数，实际超时为基础值+每rank额外100ms。 |
 | `HCCL_RDMA_TC` | 132 | Device RDMA Traffic Class（流量类别），必须为4的整数倍，有效范围0-255。用于NPU Device RDMA传输的QoS配置。 |
 | `HCCL_RDMA_SL` | 4 | Device RDMA Service Level（服务等级），有效范围0-7。用于NPU Device RDMA传输的QoS配置。 |
+| `MF_NPU_RDMA_SEND_CQ_DEPTH` | 16384 | Device RDMA 发送CQ（Completion Queue）深度，有效范围64-32768。 |
+| `MF_NPU_RDMA_RECV_CQ_DEPTH` | 16384 | Device RDMA 接收CQ深度，有效范围64-32768。 |
+| `MF_NPU_RDMA_MAX_SEND_WR` | 32767 | Device RDMA 发送WQ深度（max_send_wr），有效范围64-32767。 |
+| `MF_NPU_RDMA_MAX_RECV_WR` | 32767 | Device RDMA 接收WQ深度（max_recv_wr），有效范围64-32767。 |
 
 ## 构建时环境变量
 
