@@ -5,6 +5,7 @@
 ---
 
 ## 目录
+
 1. [概述](#概述)
 2. [架构概述](#架构概述)
 3. [第一部分：无 ETCD 模式](#第一部分无-etcd-模式)
@@ -16,6 +17,7 @@
 ## 概述
 
 configStore 是 MemFabric 的配置存储系统，用于管理集群配置（如节点数量、rank 分配等）。它支持两种模式：
+
 - **无 ETCD 模式**：使用简单的 TCP 服务器（适合单节点测试）。服务器会自动在 rank 0 的进程中启动，监听指定的 IP 和端口，其他 rank 作为客户端连接。
 - **ETCD 模式**：使用 ETCD 作为分布式后端（适合多节点生产环境，支持高可用性和自动故障转移）。启用步骤请参考 [`etcd_store_backend.md`](etcd_store_backend.md)。
 
@@ -30,7 +32,7 @@ TCP 服务器通过内部的 AccTcpServer 组件启动，它监听客户端连�
 | 组件                  | 职责                                              | 关键常量                                      |
 |---------------------|-------------------------------------------------|-------------------------------------------|
 | `TcpConfigStore`    | TCP 配置存储，Server/Client 双角色                      | `CONNECT_RETRY_MAX_TIMES = 60`            |
-| `AccStoreServer`    | TCP Server 实现，KV 存储管理                           | `HEARTBEAT_INTERVAL`, `HEARTBEAT_TIMEOUT` |
+| `AccStoreServer`    | TCP Server 实现，KV 存储管理                           | `MF_CONFIG_STORE_HEARTBEAT_TIMEOUT_S` |
 | `HybridConfigStore` | ETCD 模式混合存储，基于 TcpConfigStore 代理实现，负责 Leader 选举 | `ETCD_LEASE_TTL_SEC = 5`                  |
 | `EtcdClientV3`      | ETCD v3 客户端，分布式协调，封装go api，c接口->c++接口           | Lease 自动续约                                |
 | `NetworkChecker`    | 网络连通性检查 (非阻塞)，Server连通性检查，查找本地可用bind端口          | `CONNECTION_TIMEOUT_SEC = 3`              |
@@ -43,7 +45,7 @@ TCP 服务器通过内部的 AccTcpServer 组件启动，它监听客户端连�
 | Leader 健康检查间隔  | 4 秒                 | 检测 ETCD 连接和 Lease 状态                             |
 | 随机退避           | 100-1000ms          | 避免选举惊群                                           |
 | 网络检查超时         | 3 秒                 | 判断 Leader 是否可达                                   |
-| 心跳超时           | 3 秒                 | 心跳检测超时时间                                         |
+| 心跳超时 | 默认 60 秒 | `MF_CONFIG_STORE_HEARTBEAT_TIMEOUT_S`；0 表示永不超时，检测周期为 2 秒 |
 | 恢复等待           | 5秒wait连接 + 5秒wait清理 | 新 Leader 等待旧 Rank 重连，再等待unimport (异步执行，不阻塞老节点连接) |
 | 客户端重连次数        | 60 次 (间隔1秒)         | Client 最大重连尝试次数，每次间隔1秒                           |
 
@@ -401,7 +403,7 @@ end
 |-----------|-------------------|
 | 健康检查间隔    | 4 秒               |
 | Lease TTL | 5 秒               |
-| 心跳超时      | 3 秒               |
+| 心跳超时      | 默认 60 秒，可通过 `MF_CONFIG_STORE_HEARTBEAT_TIMEOUT_S` 配置，0 表示永不超时 |
 | Leader 降级 | ~4s (健康检查周期触发后立即) |
 
 **确保旧 Leader 先降级再有新 Leader 产生。**

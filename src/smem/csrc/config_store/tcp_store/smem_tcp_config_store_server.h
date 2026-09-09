@@ -126,6 +126,7 @@ private:
     void TimerThreadTask() noexcept;
     void RankStateTask() noexcept;
     void CheckerThreadTask() noexcept;
+    static uint32_t ParseHeartbeatTimeoutS(const std::string &value) noexcept;
     Result FindOrInsertRank(const ock::acc::AccTcpRequestContext &context, SmemMessage &request) noexcept;
 
 private:
@@ -177,6 +178,7 @@ private:
     std::unordered_set<uint32_t> aliveRankSet_;
     ConfigStoreServerBrokenHandler externalBrokenHandler_{nullptr};
     std::unordered_map<uint32_t, int64_t> heartBeatMap_;
+    uint32_t heartBeatTimeoutS_;
     std::thread checkerThread_;
 };
 using AccStoreServerPtr = SmRef<AccStoreServer>;

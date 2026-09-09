@@ -23,6 +23,7 @@
 | `ACCLINK_CERT_CHECK_AHEAD_DAYS` | 30 | 证书提前检查天数，在证书过期前多少天开始告警，有效范围1-365。 |
 | `MF_CONFIG_STORE_PORT_START` | 9000 | Config Store可用端口范围起始值，与`MF_CONFIG_STORE_PORT_END`配合使用。TransferEngine在`session_id`未指定端口（如`ip`/`ip:0`）时自动选端口亦使用此范围。 |
 | `MF_CONFIG_STORE_PORT_END` | 65535 | Config Store可用端口范围结束值。 |
+| `MF_CONFIG_STORE_HEARTBEAT_TIMEOUT_S` | 60 | Config Store 服务端心跳超时（秒），范围 0～3600（1 小时）；0 表示永不超时。 |
 | `MF_GROUP_JOIN_MAX_TIMEOUT` | 600 | Group Join最大超时时间（秒）。在`smem_trans`和`smem_bm`的Join/GroupUpdate流程中控制等待集群加入的超时上限。 |
 | `MF_SMEM_GROUP_RETRY_TIME` | 10 | Group Update重试次数。在`smem_trans`和`smem_bm`的Update流程中控制`GroupUpdate`的重试次数，每次重试间隔1秒。 |
 | `MF_QP_READY_CHECK_TIMEOUT_BASE` | 100 | Device RDMA QP（Queue Pair）就绪检查超时基础值（秒）。在Device RDMA传输模式下，等待所有rank的QP就绪的总超时基数，实际超时为基础值+每rank额外100ms。 |

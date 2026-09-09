@@ -14,6 +14,7 @@
 #include <pthread.h>
 #include <algorithm>
 #include <climits>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 #include "acc_tcp_server.h"
@@ -30,7 +31,8 @@ namespace smem {
 std::atomic<uint64_t> StoreWaitContext::idGen_{1UL};
 constexpr uint16_t MAX_U16_INDEX = 65535;
 constexpr uint64_t SERVER_RECOVER_TIME = 5 * 1000 * 1000; // 5s
-constexpr uint32_t HEARTBEAT_TIMEOUT = 30;
+constexpr uint32_t DEFAULT_HEARTBEAT_TIMEOUT_S = 60;
+constexpr uint32_t MAX_HEARTBEAT_TIMEOUT_S = 3600; // 1 hour
 // keep > SERVER_RECOVER_TIME so the group event survives the recover window
 constexpr int32_t EPHEMERAL_KEY_TTL_SEC = 7;
 constexpr int32_t PERSISTENT_KEY_TTL_SEC = 0;
@@ -51,7 +53,10 @@ AccStoreServer::AccStoreServer(std::string ip, uint16_t port, uint32_t worldSize
                        {MessageType::WATCH_RANK_STATE, &AccStoreServer::WatchRankStateHandler},
                        {MessageType::HEARTBEAT, &AccStoreServer::HeartbeatHandler}},
       backend_(std::move(backend)), listenIp_{std::move(ip)}, listenPort_{port}, worldSize_{worldSize},
-      skipRecover_{skipRecover}
+      skipRecover_{skipRecover}, heartBeatTimeoutS_{ParseHeartbeatTimeoutS([]() {
+          const char *value = std::getenv("MF_CONFIG_STORE_HEARTBEAT_TIMEOUT_S");
+          return value == nullptr ? "" : value;
+      }())}
 {}
 
 Result AccStoreServer::Startup(const smem_tls_config &tlsConfig) noexcept
@@ -1103,16 +1108,30 @@ void AccStoreServer::RankStateTask() noexcept
     }
 }
 
+uint32_t AccStoreServer::ParseHeartbeatTimeoutS(const std::string &value) noexcept
+{
+    uint32_t timeoutS = DEFAULT_HEARTBEAT_TIMEOUT_S;
+    if (!value.empty() && (value.find_first_not_of("0123456789") != std::string::npos ||
+                           !mf::StrUtil::String2Uint(value, timeoutS) || timeoutS > MAX_HEARTBEAT_TIMEOUT_S)) {
+        STORE_LOG_ERROR("invalid MF_CONFIG_STORE_HEARTBEAT_TIMEOUT_S=" << value << ", expected seconds in [0, "
+                                                                       << MAX_HEARTBEAT_TIMEOUT_S << "], using default="
+                                                                       << DEFAULT_HEARTBEAT_TIMEOUT_S);
+        return DEFAULT_HEARTBEAT_TIMEOUT_S;
+    }
+    return timeoutS;
+}
+
 void AccStoreServer::CheckerThreadTask() noexcept
 {
     pthread_setname_np(pthread_self(), "store_chk_sts");
+    const auto timeout = std::chrono::seconds(heartBeatTimeoutS_);
     std::unordered_set<uint32_t> brokenLinks;
     std::unique_lock<std::mutex> lockerGuard{storeMutex_};
     while (state_.load() != SS_EXITED) {
         auto curTime = mf::StrUtil::GetNowTime();
         for (auto it = heartBeatMap_.begin(); it != heartBeatMap_.end();) {
-            if ((curTime - it->second) / HEARTBEAT_INTERVAL > HEARTBEAT_TIMEOUT) {
-                STORE_LOG_TRACE("link(" << it->first << ") broken");
+            if (heartBeatTimeoutS_ > 0 && std::chrono::milliseconds(curTime - it->second) >= timeout) {
+                STORE_LOG_TRACE("link(" << it->first << ") heartbeat expired, timeoutS=" << heartBeatTimeoutS_);
                 brokenLinks.insert(it->first);
                 it = heartBeatMap_.erase(it);
             } else {
