@@ -16,8 +16,10 @@
  * (src/hybm/csrc/transport/device/device_qp_manager.cpp CreateLocalSocket/CreateServerSocket,
  *  src/hybm/csrc/transport/device/joinable_ranks_qp_manager.cpp CreateConnectionToServers/
  *  GetSocketFdByAddrs) without pulling in any smem/hybm logic:
- *   listen : RaSocketInit -> [RaSocketWhiteListAdd] -> RaSocketListenStart -> RaGetSockets(role=0)
- *   connect: RaSocketInit -> RaSocketBatchConnect                    -> RaGetSockets(role=1)
+ *   common : RaInit -> RaRdevInitV2 -> RaSocketInit
+ *            (mirror device_rdma_transport_manager.cpp RaInit/RaRdevInit, mandatory precondition)
+ *   listen : [RaSocketWhiteListAdd] -> RaSocketListenStart -> RaGetSockets(role=0)
+ *   connect: RaSocketBatchConnect                            -> RaGetSockets(role=1)
  *
  * Build (on the NPU node, inside the same container/env as the product):
  *   gcc -O2 -Wall -o hccn_probe hccn_sock_probe.c -ldl
@@ -42,6 +44,7 @@
 #include <getopt.h>
 #include <netinet/in.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,6 +65,21 @@ typedef union {
     struct in_addr addr;
     struct in6_addr addr6;
 } hccp_ip_addr_t;
+
+typedef struct {
+    uint32_t phy_id;
+    uint32_t nic_position;
+    int hdc_type;
+    bool enable_hdc_async;
+} hccp_ra_init_cfg_t;
+
+typedef struct {
+    int mode;
+    uint32_t notify_type;
+    bool enabled_910a_lite;
+    bool disabled_lite_thread;
+    bool enabled_2mb_lite;
+} hccp_rdev_init_t;
 
 typedef struct {
     uint32_t phy_id;
@@ -104,6 +122,8 @@ typedef struct {
 } hccp_close_info_t;
 
 struct probe_api {
+    int (*ra_init)(const hccp_ra_init_cfg_t *cfg);
+    int (*rdev_init_v2)(hccp_rdev_init_t info, hccp_rdev_t rdev, void **handle);
     int (*socket_init)(int mode, hccp_rdev_t rdev, void **handle);
     int (*socket_deinit)(void *handle);
     int (*listen_start)(hccp_listen_info_t info[], uint32_t num);
@@ -201,6 +221,8 @@ static int load_api(const char *lib_path, struct probe_api *api, int64_t start_m
         const char *primary;
         const char *alt;
     } items[] = {
+        {(void **)&api->ra_init, "ra_init", "RaInit"},
+        {(void **)&api->rdev_init_v2, "ra_rdev_init_v2", "RaRdevInitV2"},
         {(void **)&api->socket_init, "ra_socket_init", "RaSocketInit"},
         {(void **)&api->socket_deinit, "ra_socket_deinit", "RaSocketDeinit"},
         {(void **)&api->listen_start, "ra_socket_listen_start", "RaSocketListenStart"},
@@ -217,8 +239,8 @@ static int load_api(const char *lib_path, struct probe_api *api, int64_t start_m
         log_ts(start_ms, "dlsym %-26s -> %s", items[i].primary,
                (*items[i].slot != NULL) ? used : "MISSING");
     }
-    int required_missing = (api->socket_init == NULL) || (api->listen_start == NULL) ||
-                           (api->batch_connect == NULL) || (api->get_sockets == NULL);
+    int required_missing = (api->ra_init == NULL) || (api->rdev_init_v2 == NULL) || (api->socket_init == NULL) ||
+                           (api->listen_start == NULL) || (api->batch_connect == NULL) || (api->get_sockets == NULL);
     if (required_missing) {
         log_ts(start_ms, "ERROR required libra.so symbols missing, cannot continue");
         return 1;
@@ -234,6 +256,47 @@ static void fill_tag(char dst[HCCP_SOCK_CONN_TAG_SIZE], const char *text)
         len = HCCP_SOCK_CONN_TAG_SIZE - 1U;
     }
     (void)memcpy(dst, text, len);
+}
+
+static const char *hccn_ret_hint(int ret)
+{
+    return (ret == 128203) ? " [128203: invalid state/resource, usually missing RaInit/RaRdevInitV2 precondition]"
+                           : "";
+}
+
+static int init_rdev(const struct probe_api *api, const struct probe_opts *o, int64_t start_ms)
+{
+    hccp_ra_init_cfg_t cfg;
+    (void)memset(&cfg, 0, sizeof(cfg));
+    cfg.phy_id = o->dev_id;
+    cfg.nic_position = (uint32_t)NETWORK_OFFLINE;
+    cfg.hdc_type = 6; /* HDC_SERVICE_TYPE_RDMA, mirror product RaInit */
+    int ret = api->ra_init(&cfg);
+    if (ret != 0) {
+        log_ts(start_ms, "ERROR RaInit failed: ret=%d dev=%u%s", ret, o->dev_id, hccn_ret_hint(ret));
+        return 1;
+    }
+    log_ts(start_ms, "RaInit OK dev=%u", o->dev_id);
+
+    hccp_rdev_init_t info;
+    (void)memset(&info, 0, sizeof(info));
+    info.mode = NETWORK_OFFLINE;
+    info.notify_type = 1U; /* NOTIFY, mirror product RaRdevInit */
+    info.enabled_2mb_lite = true;
+    hccp_rdev_t rdev;
+    (void)memset(&rdev, 0, sizeof(rdev));
+    rdev.phy_id = o->dev_id;
+    rdev.family = AF_INET;
+    rdev.local_ip.addr.s_addr = inet_addr(o->local_ip);
+    void *rdma_handle = NULL;
+    ret = api->rdev_init_v2(info, rdev, &rdma_handle);
+    if (ret != 0 || rdma_handle == NULL) {
+        log_ts(start_ms, "ERROR RaRdevInitV2 failed: ret=%d dev=%u ip=%s%s", ret, o->dev_id, o->local_ip,
+               hccn_ret_hint(ret));
+        return 1;
+    }
+    log_ts(start_ms, "RaRdevInitV2 OK dev=%u ip=%s handle=%p", o->dev_id, o->local_ip, rdma_handle);
+    return 0;
 }
 
 static int init_socket(const struct probe_api *api, const struct probe_opts *o, void **sock, int64_t start_ms)
@@ -333,7 +396,7 @@ static int add_whitelist(const struct probe_api *api, void *sock, const struct p
     fill_tag(w.tag, o->tag);
     int ret = api->white_list_add(sock, &w, 1U);
     if (ret != 0) {
-        log_ts(start_ms, "ERROR RaSocketWhiteListAdd failed: ret=%d ip=%s", ret, o->allow_ip);
+        log_ts(start_ms, "ERROR RaSocketWhiteListAdd failed: ret=%d ip=%s%s", ret, o->allow_ip, hccn_ret_hint(ret));
         return 1;
     }
     log_ts(start_ms, "RaSocketWhiteListAdd OK ip=%s tag=%s", o->allow_ip, o->tag);
@@ -411,8 +474,8 @@ static int run_connect(const struct probe_api *api, const struct probe_opts *o, 
     fill_tag(ci.tag, o->tag);
     int ret = api->batch_connect(&ci, 1U);
     if (ret != 0) {
-        log_ts(start_ms, "ERROR RaSocketBatchConnect failed immediately: ret=%d remote=%s:%u", ret, o->remote_ip,
-               o->port);
+        log_ts(start_ms, "ERROR RaSocketBatchConnect failed immediately: ret=%d remote=%s:%u%s", ret, o->remote_ip,
+               o->port, hccn_ret_hint(ret));
         (void)api->socket_deinit(sock);
         return 1;
     }
@@ -549,6 +612,9 @@ int main(int argc, char *argv[])
     struct probe_api api;
     (void)memset(&api, 0, sizeof(api));
     if (load_api(o.lib_path, &api, start_ms) != 0) {
+        return 1;
+    }
+    if (init_rdev(&api, &o, start_ms) != 0) {
         return 1;
     }
     int rc = is_listen ? run_listen(&api, &o, start_ms) : run_connect(&api, &o, start_ms);
