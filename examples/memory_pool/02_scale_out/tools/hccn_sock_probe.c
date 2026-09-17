@@ -15,11 +15,11 @@
  * Mirrors the minimal libra.so call chain used by the product
  * (src/hybm/csrc/transport/device/device_qp_manager.cpp CreateLocalSocket/CreateServerSocket,
  *  src/hybm/csrc/transport/device/joinable_ranks_qp_manager.cpp CreateConnectionToServers/
- *  GetSocketFdByAddrs) without pulling in any smem/hybm logic:
- *   common : RaInit -> RaRdevInitV2 -> RaSocketInit
- *            (mirror device_rdma_transport_manager.cpp RaInit/RaRdevInit, mandatory precondition)
- *   listen : [RaSocketWhiteListAdd] -> RaSocketListenStart -> RaGetSockets(role=0)
- *   connect: RaSocketBatchConnect                            -> RaGetSockets(role=1)
+ *  GetSocketFdByAddrs, device_rdma_transport_manager.cpp PrepareOpenDevice) without smem/hybm logic:
+ *   common : [RaRdevGetHandle(reuse)] else TsdOpen -> RaInit(tolerated) -> RaRdevInitV2
+ *            then verify device RoCE ip via RaGetIfNum/RaGetIfaddrs (eth<dev>)
+ *   listen : RaSocketInit -> [RaSocketWhiteListAdd] -> RaSocketListenStart -> RaGetSockets(role=0)
+ *   connect: RaSocketInit -> RaSocketBatchConnect                    -> RaGetSockets(role=1)
  *
  * Build (on the NPU node, inside the same container/env as the product):
  *   gcc -O2 -Wall -o hccn_probe hccn_sock_probe.c -ldl
@@ -53,6 +53,7 @@
 #include <time.h>
 
 #define HCCP_SOCK_CONN_TAG_SIZE 192U
+#define HCCP_MAX_INTERFACE_NAME_LEN 256U
 
 /* Byte-for-byte ABI copies of the structs in src/hybm/csrc/under_api/dl_hccp_def.h */
 enum hccp_network_mode {
@@ -86,6 +87,24 @@ typedef struct {
     int family;
     hccp_ip_addr_t local_ip;
 } hccp_rdev_t;
+
+typedef struct {
+    uint32_t phy_id;
+    uint32_t nic_position;
+    bool is_all;
+} hccp_if_attr_t;
+
+typedef struct {
+    hccp_ip_addr_t ip;
+    struct in_addr mask;
+} hccp_ifaddr_info_t;
+
+typedef struct {
+    int family;
+    int scope_id;
+    hccp_ifaddr_info_t ifaddr;
+    char ifname[HCCP_MAX_INTERFACE_NAME_LEN];
+} hccp_if_info_t;
 
 typedef struct {
     void *handle;
@@ -124,6 +143,10 @@ typedef struct {
 struct probe_api {
     int (*ra_init)(const hccp_ra_init_cfg_t *cfg);
     int (*rdev_init_v2)(hccp_rdev_init_t info, hccp_rdev_t rdev, void **handle);
+    int (*rdev_get_handle)(uint32_t dev, void **handle);
+    int (*get_ifnum)(const hccp_if_attr_t *attr, uint32_t *count);
+    int (*get_ifaddrs)(const hccp_if_attr_t *attr, hccp_if_info_t infos[], uint32_t *count);
+    uint32_t (*tsd_open)(uint32_t dev, uint32_t rank_count);
     int (*socket_init)(int mode, hccp_rdev_t rdev, void **handle);
     int (*socket_deinit)(void *handle);
     int (*listen_start)(hccp_listen_info_t info[], uint32_t num);
@@ -145,6 +168,7 @@ struct probe_opts {
     uint32_t dev_id;
     uint32_t port;
     uint32_t role;
+    uint32_t rank_count;
     int timeout_sec;
     const char *tag;
     int do_echo;
@@ -215,27 +239,38 @@ static int load_api(const char *lib_path, struct probe_api *api, int64_t start_m
         log_ts(start_ms, "ERROR dlopen(%s) failed: %s (source set_env.sh or set LD_LIBRARY_PATH)", lib_path, dlerror());
         return 1;
     }
+    void *tsd = dlopen("libtsdclient.so", RTLD_NOW | RTLD_NODELETE);
+    if (tsd == NULL) {
+        const char *err = dlerror();
+        log_ts(start_ms, "WARN dlopen(libtsdclient.so) failed: %s (TsdOpen unavailable, cold path will fail)",
+               (err != NULL) ? err : "unknown");
+    }
     const char *used = NULL;
     struct {
         void **slot;
+        void *lib;
         const char *primary;
         const char *alt;
     } items[] = {
-        {(void **)&api->ra_init, "ra_init", "RaInit"},
-        {(void **)&api->rdev_init_v2, "ra_rdev_init_v2", "RaRdevInitV2"},
-        {(void **)&api->socket_init, "ra_socket_init", "RaSocketInit"},
-        {(void **)&api->socket_deinit, "ra_socket_deinit", "RaSocketDeinit"},
-        {(void **)&api->listen_start, "ra_socket_listen_start", "RaSocketListenStart"},
-        {(void **)&api->listen_stop, "ra_socket_listen_stop", "RaSocketListenStop"},
-        {(void **)&api->batch_connect, "ra_socket_batch_connect", "RaSocketBatchConnect"},
-        {(void **)&api->batch_close, "ra_socket_batch_close", "RaSocketBatchClose"},
-        {(void **)&api->get_sockets, "ra_get_sockets", "RaGetSockets"},
-        {(void **)&api->white_list_add, "ra_socket_white_list_add", "RaSocketWhiteListAdd"},
-        {(void **)&api->socket_send, "ra_socket_send", "RaSocketSend"},
-        {(void **)&api->socket_recv, "ra_socket_recv", "RaSocketRecv"},
+        {(void **)&api->ra_init, lib, "ra_init", "RaInit"},
+        {(void **)&api->rdev_init_v2, lib, "ra_rdev_init_v2", "RaRdevInitV2"},
+        {(void **)&api->rdev_get_handle, lib, "ra_rdev_get_handle", "RaRdevGetHandle"},
+        {(void **)&api->get_ifnum, lib, "ra_get_ifnum", "RaGetIfnum"},
+        {(void **)&api->get_ifaddrs, lib, "ra_get_ifaddrs", "RaGetIfaddrs"},
+        {(void **)&api->socket_init, lib, "ra_socket_init", "RaSocketInit"},
+        {(void **)&api->socket_deinit, lib, "ra_socket_deinit", "RaSocketDeinit"},
+        {(void **)&api->listen_start, lib, "ra_socket_listen_start", "RaSocketListenStart"},
+        {(void **)&api->listen_stop, lib, "ra_socket_listen_stop", "RaSocketListenStop"},
+        {(void **)&api->batch_connect, lib, "ra_socket_batch_connect", "RaSocketBatchConnect"},
+        {(void **)&api->batch_close, lib, "ra_socket_batch_close", "RaSocketBatchClose"},
+        {(void **)&api->get_sockets, lib, "ra_get_sockets", "RaGetSockets"},
+        {(void **)&api->white_list_add, lib, "ra_socket_white_list_add", "RaSocketWhiteListAdd"},
+        {(void **)&api->socket_send, lib, "ra_socket_send", "RaSocketSend"},
+        {(void **)&api->socket_recv, lib, "ra_socket_recv", "RaSocketRecv"},
+        {(void **)&api->tsd_open, tsd, "TsdOpen", "TsdOpen"},
     };
     for (size_t i = 0; i < sizeof(items) / sizeof(items[0]); i++) {
-        *items[i].slot = sym_or_alt(lib, items[i].primary, items[i].alt, &used);
+        *items[i].slot = (items[i].lib != NULL) ? sym_or_alt(items[i].lib, items[i].primary, items[i].alt, &used) : NULL;
         log_ts(start_ms, "dlsym %-26s -> %s", items[i].primary,
                (*items[i].slot != NULL) ? used : "MISSING");
     }
@@ -264,20 +299,59 @@ static const char *hccn_ret_hint(int ret)
                            : "";
 }
 
-static int init_rdev(const struct probe_api *api, const struct probe_opts *o, int64_t start_ms)
+static int verify_device_ip(const struct probe_api *api, const struct probe_opts *o, int64_t start_ms)
 {
-    hccp_ra_init_cfg_t cfg;
-    (void)memset(&cfg, 0, sizeof(cfg));
-    cfg.phy_id = o->dev_id;
-    cfg.nic_position = (uint32_t)NETWORK_OFFLINE;
-    cfg.hdc_type = 6; /* HDC_SERVICE_TYPE_RDMA, mirror product RaInit */
-    int ret = api->ra_init(&cfg);
-    if (ret != 0) {
-        log_ts(start_ms, "ERROR RaInit failed: ret=%d dev=%u%s", ret, o->dev_id, hccn_ret_hint(ret));
-        return 1;
+    if (api->get_ifnum == NULL || api->get_ifaddrs == NULL) {
+        log_ts(start_ms, "WARN get_ifnum/get_ifaddrs missing, skip device ip verification");
+        return 0;
     }
-    log_ts(start_ms, "RaInit OK dev=%u", o->dev_id);
+    hccp_if_attr_t attr;
+    (void)memset(&attr, 0, sizeof(attr));
+    attr.phy_id = o->dev_id;
+    attr.nic_position = (uint32_t)NETWORK_OFFLINE;
+    attr.is_all = true;
+    uint32_t count = 0;
+    if (api->get_ifnum(&attr, &count) != 0 || count == 0U) {
+        log_ts(start_ms, "WARN RaGetIfnum failed, skip device ip verification");
+        return 0;
+    }
+    hccp_if_info_t infos[8];
+    if (count > 8U) {
+        count = 8U;
+    }
+    if (api->get_ifaddrs(&attr, infos, &count) != 0) {
+        log_ts(start_ms, "WARN RaGetIfaddrs failed, skip device ip verification");
+        return 0;
+    }
+    char want_name[16];
+    (void)snprintf(want_name, sizeof(want_name), "eth%u", o->dev_id);
+    struct in_addr want;
+    want.s_addr = inet_addr(o->local_ip);
+    int found = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        if (infos[i].family != AF_INET) {
+            continue;
+        }
+        char ipstr[INET_ADDRSTRLEN] = {0};
+        (void)inet_ntop(AF_INET, &infos[i].ifaddr.ip.addr, ipstr, sizeof(ipstr));
+        log_ts(start_ms, "device interface: name=%s ip=%s", infos[i].ifname, ipstr);
+        if (strcmp(infos[i].ifname, want_name) == 0) {
+            found = 1;
+            if (infos[i].ifaddr.ip.addr.s_addr != want.s_addr) {
+                log_ts(start_ms, "WARN eth%u real ip %s != given -i %s", o->dev_id, ipstr, o->local_ip);
+            } else {
+                log_ts(start_ms, "device ip verified: eth%u == %s", o->dev_id, ipstr);
+            }
+        }
+    }
+    if (found == 0) {
+        log_ts(start_ms, "WARN interface %s not found among %u entries, mapping unverified", want_name, count);
+    }
+    return 0;
+}
 
+static int rdev_init_v2(const struct probe_api *api, const struct probe_opts *o, int64_t start_ms)
+{
     hccp_rdev_init_t info;
     (void)memset(&info, 0, sizeof(info));
     info.mode = NETWORK_OFFLINE;
@@ -289,7 +363,7 @@ static int init_rdev(const struct probe_api *api, const struct probe_opts *o, in
     rdev.family = AF_INET;
     rdev.local_ip.addr.s_addr = inet_addr(o->local_ip);
     void *rdma_handle = NULL;
-    ret = api->rdev_init_v2(info, rdev, &rdma_handle);
+    int ret = api->rdev_init_v2(info, rdev, &rdma_handle);
     if (ret != 0 || rdma_handle == NULL) {
         log_ts(start_ms, "ERROR RaRdevInitV2 failed: ret=%d dev=%u ip=%s%s", ret, o->dev_id, o->local_ip,
                hccn_ret_hint(ret));
@@ -297,6 +371,61 @@ static int init_rdev(const struct probe_api *api, const struct probe_opts *o, in
     }
     log_ts(start_ms, "RaRdevInitV2 OK dev=%u ip=%s handle=%p", o->dev_id, o->local_ip, rdma_handle);
     return 0;
+}
+
+static int reuse_or_open_tsd(const struct probe_api *api, const struct probe_opts *o, int64_t start_ms, int *reused)
+{
+    void *rdma_handle = NULL;
+    if (api->rdev_get_handle != NULL && api->rdev_get_handle(o->dev_id, &rdma_handle) == 0 && rdma_handle != NULL) {
+        log_ts(start_ms, "RaRdevGetHandle OK dev=%u handle=%p (device already opened, reuse)", o->dev_id, rdma_handle);
+        *reused = 1;
+        return 0;
+    }
+    if (api->tsd_open == NULL) {
+        log_ts(start_ms, "ERROR TsdOpen unavailable (libtsdclient.so not loaded) and device not opened by anyone");
+        return 1;
+    }
+    uint32_t trc = api->tsd_open(o->dev_id, o->rank_count);
+    if (trc != 0U) {
+        log_ts(start_ms, "ERROR TsdOpen failed: ret=%u dev=%u rank_count=%u", trc, o->dev_id, o->rank_count);
+        return 1;
+    }
+    log_ts(start_ms, "TsdOpen OK dev=%u rank_count=%u", o->dev_id, o->rank_count);
+    *reused = 0;
+    return 0;
+}
+
+static int init_rdev(const struct probe_api *api, const struct probe_opts *o, int64_t start_ms)
+{
+    int reused = 0;
+    if (reuse_or_open_tsd(api, o, start_ms, &reused) != 0) {
+        return 1;
+    }
+    if (reused) {
+        return verify_device_ip(api, o, start_ms);
+    }
+    hccp_ra_init_cfg_t cfg;
+    (void)memset(&cfg, 0, sizeof(cfg));
+    cfg.phy_id = o->dev_id;
+    cfg.nic_position = (uint32_t)NETWORK_OFFLINE;
+    cfg.hdc_type = 6; /* HDC_SERVICE_TYPE_RDMA, mirror product RaInit */
+    int ret = api->ra_init(&cfg);
+    if (ret != 0) {
+        log_ts(start_ms, "WARN RaInit failed: ret=%d, try RaRdevGetHandle fallback%s", ret, hccn_ret_hint(ret));
+        void *handle = NULL;
+        if (api->rdev_get_handle != NULL && api->rdev_get_handle(o->dev_id, &handle) == 0 && handle != NULL) {
+            log_ts(start_ms, "RaRdevGetHandle OK after RaInit-warn handle=%p", handle);
+            return verify_device_ip(api, o, start_ms);
+        }
+        log_ts(start_ms, "ERROR no usable rdma handle: device not initialized by anyone; run a product process once "
+                         "on this node or check driver state");
+        return 1;
+    }
+    log_ts(start_ms, "RaInit OK dev=%u", o->dev_id);
+    if (rdev_init_v2(api, o, start_ms) != 0) {
+        return 1;
+    }
+    return verify_device_ip(api, o, start_ms);
 }
 
 static int init_socket(const struct probe_api *api, const struct probe_opts *o, void **sock, int64_t start_ms)
@@ -509,13 +638,14 @@ static void usage(void)
 {
     fprintf(stderr,
             "usage: %s <listen|connect> [-d dev_id] -i local_ip -r remote_ip [-p port] [-t timeout_sec]\n"
-            "       [-a allow_ip] [--role 0|1] [--tag TAG] [--lib PATH] [--echo]\n"
+            "       [-a allow_ip] [-n rank_count] [--role 0|1] [--tag TAG] [--lib PATH] [--echo]\n"
             "  listen : bind NPU RoCE ip and wait for one incoming hccn socket (role default 0)\n"
             "  connect: connect out to remote NPU RoCE ip (role default 1)\n"
             "  -d NPU device id (phyId, default 0)   -i local RoCE ip bound by RaSocketInit\n"
             "  -r remote ip, required in BOTH modes (listen side: expected client ip used by the query)\n"
             "  -p port (default 10010, away from product 10005)\n"
             "  -a whitelist the given source ip on listen side (recommended, mirrors product)\n"
+            "  -n rank count passed to TsdOpen (default 2)\n"
             "  -t probe timeout seconds (listen default 60, connect default 15)\n"
             "  --role override RaGetSockets role (0=server side, 1=client side)\n"
             "  --tag  hccn tag (default TRANS_TAG, mirror FillHccpTag; try BM_TAG if needed)\n"
@@ -532,6 +662,7 @@ static int parse_opts(int argc, char *argv[], struct probe_opts *o)
     o->port = 10010U;
     o->timeout_sec = -1;
     o->role = UINT32_MAX;
+    o->rank_count = 2U;
     o->tag = "TRANS_TAG";
     static const struct option longOpts[] = {
         {"role", required_argument, NULL, 'R'}, {"tag", required_argument, NULL, 'T'},
@@ -539,7 +670,7 @@ static int parse_opts(int argc, char *argv[], struct probe_opts *o)
         {NULL, 0, NULL, 0},
     };
     int ch;
-    while ((ch = getopt_long(argc, argv, "d:i:r:p:t:a:h", longOpts, NULL)) != -1) {
+    while ((ch = getopt_long(argc, argv, "d:i:r:p:t:a:n:h", longOpts, NULL)) != -1) {
         switch (ch) {
             case 'd':
                 o->dev_id = (uint32_t)strtoul(optarg, NULL, 0);
@@ -558,6 +689,9 @@ static int parse_opts(int argc, char *argv[], struct probe_opts *o)
                 break;
             case 'a':
                 o->allow_ip = optarg;
+                break;
+            case 'n':
+                o->rank_count = (uint32_t)strtoul(optarg, NULL, 0);
                 break;
             case 'R':
                 o->role = (uint32_t)strtoul(optarg, NULL, 0);
