@@ -14,7 +14,7 @@ echo "[POC] ASCEND_HOME_PATH = ${ASCEND_HOME_PATH}"
 
 mkdir -p "${BUILD_DIR}/kernel" "${BUILD_DIR}/host"
 
-# ── 1. AIV 内核（AscendC -> 静态库 -> 解包出 .o） ──
+# ── 1. AIV 内核（AscendC 编译，取最终 merge 的设备镜像 .o） ──
 # ASC_DEVKIT_ROOT：asc-devkit 仓位置（提供 AscendC::Hcomm），默认 ~/asc-devkit
 cmake -S "${SCRIPT_DIR}/kernel" -B "${BUILD_DIR}/kernel" \
     -DASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
@@ -22,20 +22,22 @@ cmake -S "${SCRIPT_DIR}/kernel" -B "${BUILD_DIR}/kernel" \
     -DCMAKE_BUILD_TYPE=RELEASE
 cmake --build "${BUILD_DIR}/kernel" -j
 
-KERNEL_A="$(find "${BUILD_DIR}/kernel" -name 'libpoc_aiv_hcomm_kernel.a' | head -1)"
-if [ -z "${KERNEL_A}" ]; then
-    echo "[POC][ERROR] kernel static lib not found"
-    exit 1
-fi
-pushd "${BUILD_DIR}/kernel" > /dev/null
-ar x "${KERNEL_A}"
-popd > /dev/null
-KERNEL_OBJ="$(find "${BUILD_DIR}/kernel" -name 'poc_hcomm_kernel.o' | head -1)"
+# 设备镜像说明：ascendc 工具链最终产物是 <name>_merge_obj_dir/device_aiv.o
+# （ld.lld -static 合成的完整设备对象，供 aclrtBinaryLoadFromFile 加载）；
+# .a 里的 poc_hcomm_kernel.cpp.o 只是 host 侧编译中间产物，不能用于加载。
+KERNEL_OBJ="$(find "${BUILD_DIR}/kernel" -path '*_merge_obj_dir/device_aiv.o' | head -1)"
 if [ -z "${KERNEL_OBJ}" ]; then
-    echo "[POC][ERROR] poc_hcomm_kernel.o not extracted from ${KERNEL_A}"
+    echo "[POC][WARN] merge_obj device_aiv.o not found, fallback to aiv_device_dir"
+    KERNEL_OBJ="$(find "${BUILD_DIR}/kernel" -path '*_aiv_device_dir/device_aiv.o' | head -1)"
+fi
+if [ -z "${KERNEL_OBJ}" ]; then
+    echo "[POC][ERROR] device_aiv.o not found under ${BUILD_DIR}/kernel"
     exit 1
 fi
-echo "[POC] kernel object: ${KERNEL_OBJ}"
+# 重命名为 poc_hcomm_kernel.o，与 run_*.sh 的 find 及 --kernel-o 默认路径保持一致
+cp -f "${KERNEL_OBJ}" "${BUILD_DIR}/kernel/poc_hcomm_kernel.o"
+KERNEL_OBJ="${BUILD_DIR}/kernel/poc_hcomm_kernel.o"
+echo "[POC] kernel object: ${KERNEL_OBJ} (from $(find "${BUILD_DIR}/kernel" -path '*_merge_obj_dir/device_aiv.o' | head -1))"
 
 # ── 2. Host 可执行 ──
 cmake -S "${SCRIPT_DIR}/host" -B "${BUILD_DIR}/host" -DCMAKE_BUILD_TYPE=RELEASE
