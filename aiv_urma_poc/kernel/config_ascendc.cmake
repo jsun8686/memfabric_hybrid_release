@@ -1,0 +1,19 @@
+# 从 MemFabric acc_offload 移植的 AscendC 工具链定位逻辑（原始来源 CANN ascendc_kernel_cmake）
+if (DEFINED ASCEND_HOME_PATH)
+elseif (DEFINED ENV{ASCEND_HOME_PATH})
+    set(ASCEND_HOME_PATH "$ENV{ASCEND_HOME_PATH}" CACHE PATH "ASCEND CANN package installation directory" FORCE)
+endif ()
+set(ASCEND_CANN_PACKAGE_PATH ${ASCEND_HOME_PATH})
+
+if (EXISTS ${ASCEND_HOME_PATH}/tools/tikcpp/ascendc_kernel_cmake)
+    set(ASCENDC_CMAKE_DIR ${ASCEND_HOME_PATH}/tools/tikcpp/ascendc_kernel_cmake)
+elseif (EXISTS ${ASCEND_HOME_PATH}/compiler/tikcpp/ascendc_kernel_cmake)
+    set(ASCENDC_CMAKE_DIR ${ASCEND_HOME_PATH}/compiler/tikcpp/ascendc_kernel_cmake)
+elseif (EXISTS ${ASCEND_HOME_PATH}/ascendc_devkit/tikcpp/samples/cmake)
+    set(ASCENDC_CMAKE_DIR ${ASCEND_HOME_PATH}/ascendc_devkit/tikcpp/samples/cmake)
+else ()
+    message(FATAL_ERROR "poc: ascendc_kernel_cmake does not exist under ASCEND_HOME_PATH=${ASCEND_HOME_PATH}, check CANN install.")
+endif ()
+
+include(${ASCENDC_CMAKE_DIR}/ascendc.cmake)
+message(STATUS "poc: ASCENDC_CMAKE_DIR = ${ASCENDC_CMAKE_DIR}")
