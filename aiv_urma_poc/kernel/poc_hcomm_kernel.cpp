@@ -73,10 +73,11 @@ static inline __aicore__ int32_t PocTransferImpl(const PocKernelArgs *args, bool
     uint64_t offset = 0;
     while (offset < args->size) {
         const uint64_t cur = (args->size - offset < chunk) ? (args->size - offset) : chunk;
-        const GM_ADDR dst = isRead ? reinterpret_cast<GM_ADDR>(args->localAddr + offset)
-                                   : reinterpret_cast<GM_ADDR>(args->remoteAddr + offset);
-        const GM_ADDR src = isRead ? reinterpret_cast<GM_ADDR>(args->remoteAddr + offset)
-                                   : reinterpret_cast<GM_ADDR>(args->localAddr + offset);
+        // 注意：GM_ADDR 是宏，const 不能加在 GM_ADDR 前（会展开成底层 const，与 WriteNbi/ReadNbi 形参冲突）
+        GM_ADDR dst = isRead ? reinterpret_cast<GM_ADDR>(args->localAddr + offset)
+                             : reinterpret_cast<GM_ADDR>(args->remoteAddr + offset);
+        GM_ADDR src = isRead ? reinterpret_cast<GM_ADDR>(args->remoteAddr + offset)
+                             : reinterpret_cast<GM_ADDR>(args->localAddr + offset);
         // commit=false：攒 WQE，循环结束后一次性 Commit，减少 doorbell 次数
         if (isRead) {
             ret = hcomm.template ReadNbi<false>(args->channel, dst, src, cur);
