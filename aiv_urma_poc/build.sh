@@ -12,7 +12,12 @@ if [ -z "${ASCEND_HOME_PATH}" ]; then
 fi
 echo "[POC] ASCEND_HOME_PATH = ${ASCEND_HOME_PATH}"
 
-mkdir -p "${BUILD_DIR}/kernel" "${BUILD_DIR}/host"
+mkdir -p "${BUILD_DIR}/host"
+
+# ascendc 工具链的 merge_*_obj_text 步骤对 .o 原地改写（ld.lld -Ttext=0 in.o -o in.o），
+# 增量构建重复执行会报 "unknown file type"，故 kernel 目录每次全量重建（host 目录保留增量）
+rm -rf "${BUILD_DIR}/kernel"
+mkdir -p "${BUILD_DIR}/kernel"
 
 # ── 1. AIV 内核（AscendC 编译，取最终 merge 的设备镜像 .o） ──
 # ASC_DEVKIT_ROOT：asc-devkit 仓位置（提供 AscendC::Hcomm），默认 ~/asc-devkit
