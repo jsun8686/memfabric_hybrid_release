@@ -16,8 +16,9 @@
 
 #include "poc_kernel_common.h"
 
-// __vector__ 修饰符：标识 vector core（AIV）内核，工具链据此自动生成类型 meta
-extern "C" __vector__ __global__ __aicore__ void poc_hcomm_write(PocKernelArgs args)
+// AIV 类型由文件末尾的 EXPORT_AIV_META_INFO 手写段标识（ascendc_library 路径标准姿势），
+// 不可用 __vector__：auto_gen 宏化内核名会使该属性编译报错（详见 poc_kernel_common.h 注释）
+extern "C" __global__ __aicore__ void poc_hcomm_write(PocKernelArgs args)
 {
     if (GetBlockIdx() != 0) {
         return;
@@ -26,3 +27,4 @@ extern "C" __vector__ __global__ __aicore__ void poc_hcomm_write(PocKernelArgs a
     const int32_t ret = PocTransferImpl(&args, false);
     PocWriteStatus(args.statusAddr, (ret == 0) ? POC_STATUS_OK : (POC_STATUS_FAIL_BASE + ret));
 }
+EXPORT_AIV_META_INFO(poc_hcomm_write)

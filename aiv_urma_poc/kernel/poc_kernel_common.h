@@ -22,9 +22,32 @@
 #include "adv_api/hcomm/hcomm.h"
 #include "poc_common.h"
 
-// 类型 meta（.ascend.meta 段）不手写：kernel 函数带 __vector__ 修饰符即可让工具链
-// 自动生成 AIV 类型标识（对齐官方 asc-comm 示例 01_hcomm_write_read_nbi 的写法），
-// 手写段与自动生成流程叠加反而可能导致 aclrtBinaryGetFunction 查不到内核名。
+// 函数级 meta：标识本 kernel 为 AIV 类型（值取自 CANN KernelType 枚举，K_TYPE_AIV=3，
+// F_TYPE_KTYPE=1，布局与 hcomm AIV 算子开发指南一致）。
+// 注意：ascendc_library 构建路径必须手写本段——auto_gen 会把内核名宏化（xxx -> xxx_origin），
+// __vector__（__attribute__((aiv))）属性与内核函数的绑定会被宏破坏导致编译错误；
+// __vector__ 自动生成 meta 仅适用于 ASC 语言路径（cmake LANGUAGES ASC），与本工程无关。
+#ifndef POC_FUN_LEVEL_KTYPE_DEFINED
+#define POC_FUN_LEVEL_KTYPE_DEFINED
+struct PocBaseTlv {
+    unsigned short type;
+    unsigned short len;
+};
+struct PocFunMetaKType {
+    PocBaseTlv head;
+    unsigned int ktype;
+};
+struct PocFunLevelKType {
+    struct PocFunMetaKType ktypeMeta;
+};
+constexpr unsigned short POC_F_TYPE_KTYPE = 1;
+constexpr unsigned int POC_K_TYPE_AIV = 3;
+#endif
+
+#define EXPORT_AIV_META_INFO(kernel_name)                                                              \
+    static const struct PocFunLevelKType kernel_name##_kernel_type_section __attribute__(              \
+        (used, section(".ascend.meta." #kernel_name))) = {{POC_F_TYPE_KTYPE, sizeof(unsigned int),     \
+                                                            POC_K_TYPE_AIV}};
 
 using namespace AscendC;
 
