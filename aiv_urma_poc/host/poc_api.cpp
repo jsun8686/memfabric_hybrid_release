@@ -45,6 +45,7 @@ int PocDynApi::Load(const std::string &ascendHome)
     // OPTIONAL：部分 CANN 版本未导出（MemFabric 同为 OPTIONAL），缺失时调用方 fallback 用 logicId
     POC_DLSYM_OPT(aclrtGetPhyDevIdByLogicDevId, aclHandle, "aclrtGetPhyDevIdByLogicDevId");
     POC_DLSYM(aclrtBinaryLoadFromFile, aclHandle, "aclrtBinaryLoadFromFile");
+    POC_DLSYM(aclrtBinaryLoadFromData, aclHandle, "aclrtBinaryLoadFromData");
     POC_DLSYM(aclrtBinaryGetFunction, aclHandle, "aclrtBinaryGetFunction");
     POC_DLSYM(aclrtKernelArgsInit, aclHandle, "aclrtKernelArgsInit");
     POC_DLSYM(aclrtKernelArgsAppend, aclHandle, "aclrtKernelArgsAppend");

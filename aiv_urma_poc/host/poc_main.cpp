@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -512,15 +513,29 @@ int main(int argc, char **argv)
                 }
             }
 
-            // AIV 镜像必须带 VECTOR_CORE magic 加载（对齐 asc-devkit RegisterAscendBinary 的 AIVEC 路径），
-            // 否则 GetFunction 查不到内核名
+            // 裸 ELF 镜像加载走 FromData + VECTOR_CORE magic，对齐官方运行时链
+            // （asc-devkit RegisterAscendBinary，即 ASC <<<>>> 展开后的加载路径）；
+            // FromFile 的设计输入是 AICPU 内核包 json，对裸 .o 会加载成功但函数表为空
+            // -> aclrtBinaryGetFunction 报 107000（Cannot find kernel by name）
+            std::ifstream kernelFile(opt.kernelPath, std::ios::binary);
+            if (!kernelFile) {
+                printf("[POC][ERROR] open kernel image failed: %s\n", opt.kernelPath.c_str());
+                break;
+            }
+            std::vector<char> kernelBin((std::istreambuf_iterator<char>(kernelFile)), std::istreambuf_iterator<char>());
+            if (kernelBin.empty()) {
+                printf("[POC][ERROR] kernel image is empty: %s\n", opt.kernelPath.c_str());
+                break;
+            }
+            printf("[POC] kernel image: %s (%zu bytes)\n", opt.kernelPath.c_str(), kernelBin.size());
+
             PocBinaryLoadOption loadOpt {};
             loadOpt.type = PocBinaryLoadOptionType::MAGIC;
             loadOpt.value.magic = POC_BINARY_MAGIC_ELF_VECTOR_CORE;
             PocBinaryLoadOptions loadOpts {&loadOpt, 1};
-            ret = api.aclrtBinaryLoadFromFile(opt.kernelPath.c_str(), &loadOpts, &binHandle);
+            ret = api.aclrtBinaryLoadFromData(kernelBin.data(), kernelBin.size(), &loadOpts, &binHandle);
             if (ret != 0 || binHandle == nullptr) {
-                printf("[POC][ERROR] aclrtBinaryLoadFromFile(%s) ret=%d\n", opt.kernelPath.c_str(), ret);
+                printf("[POC][ERROR] aclrtBinaryLoadFromData(%s) ret=%d\n", opt.kernelPath.c_str(), ret);
                 break;
             }
             const char *funcName = (opt.verify == "write") ? "poc_hcomm_write" : "poc_hcomm_read";

@@ -108,6 +108,9 @@ struct PocDynApi {
     int32_t (*rtGetDeviceInfo)(uint32_t, int32_t, int32_t, int64_t *);
     int32_t (*aclrtGetPhyDevIdByLogicDevId)(int32_t, int32_t *);
     int32_t (*aclrtBinaryLoadFromFile)(const char *, PocBinaryLoadOptions *, aclrtBinHandle *);
+    // 裸 ELF 内核镜像（如 device_aiv.o）必须走 FromData + VECTOR_CORE magic（对齐
+    // asc-devkit RegisterAscendBinary）；FromFile 的设计输入是 AICPU 内核包 json
+    int32_t (*aclrtBinaryLoadFromData)(const char *, size_t, PocBinaryLoadOptions *, aclrtBinHandle *);
     int32_t (*aclrtBinaryGetFunction)(aclrtBinHandle, const char *, aclrtFuncHandle *);
     int32_t (*aclrtKernelArgsInit)(aclrtFuncHandle, aclrtArgsHandle *);
     int32_t (*aclrtKernelArgsAppend)(aclrtArgsHandle, void *, size_t, aclrtParamHandle *);
