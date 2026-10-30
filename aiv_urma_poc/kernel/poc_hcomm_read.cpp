@@ -9,16 +9,16 @@
  * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
  * See the Mulan PSL v2 for more details.
  *
- * AIV direct-drive URMA PoC read kernel（A5 / __NPU_ARCH__ 3510）。
+ * AIV direct-drive URMA PoC read kernel（A5 / dav-3510，ASC 语言编译单元）。
  * 对端 GM -> 本地 GM（AscendC::Hcomm<UBC_CTP>::ReadNbi -> Commit -> Drain）。
- * 单独成文件：ascendc 工具链要求一个编译单元一个 kernel 函数。
+ * 单独成文件：每个编译单元一个 kernel 函数。
+ * __vector__ 修饰符：标识 vector core（AIV）内核，ASC 编译器据此自动生成类型
+ * 标识与注册信息（镜像内嵌，host 侧无需手工 aclrtBinaryLoad*/GetFunction）。
  */
 
 #include "poc_kernel_common.h"
 
-// AIV 类型由文件末尾的 EXPORT_AIV_META_INFO 手写段标识（ascendc_library 路径标准姿势），
-// 不可用 __vector__：auto_gen 宏化内核名会使该属性编译报错（详见 poc_kernel_common.h 注释）
-extern "C" __global__ __aicore__ void poc_hcomm_read(PocKernelArgs args)
+extern "C" __vector__ __global__ __aicore__ void poc_hcomm_read(PocKernelArgs args)
 {
     if (GetBlockIdx() != 0) {
         return;
@@ -27,4 +27,10 @@ extern "C" __global__ __aicore__ void poc_hcomm_read(PocKernelArgs args)
     const int32_t ret = PocTransferImpl(&args, true);
     PocWriteStatus(args.statusAddr, (ret == 0) ? POC_STATUS_OK : (POC_STATUS_FAIL_BASE + ret));
 }
-EXPORT_AIV_META_INFO(poc_hcomm_read)
+
+// host 侧 launch 封装：<<<>>> 由 bisheng 编译器展开（对齐官方 asc-comm 示例
+// 04_simt_urma 的 LaunchSimtUrma 模式），main 经 extern 调用
+void LaunchPocRead(void *stream, PocKernelArgs args)
+{
+    poc_hcomm_read<<<1, 0, stream>>>(args);
+}

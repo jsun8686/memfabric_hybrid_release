@@ -5,8 +5,7 @@ set -e
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEVICE="${1:-0}"
 
-"${DIR}/build/host/poc_aiv_urma" \
+"${DIR}/build/poc/poc_aiv_urma" \
     --role server \
     --device "${DEVICE}" \
-    --verify write \
-    --kernel-o "$(find "${DIR}/build/kernel" -name 'poc_hcomm_kernel.o' | head -1)"
+    --verify write

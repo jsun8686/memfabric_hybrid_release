@@ -19,7 +19,6 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -29,6 +28,12 @@
 #include "poc_common.h"
 #include "poc_eid.h"
 #include "poc_tcp.h"
+
+// ASC 编译单元（kernel/poc_hcomm_write.cpp、poc_hcomm_read.cpp）生成的 launch 封装：
+// 内部 <<<>>> 由 bisheng 展开，设备镜像内嵌 + 自动注册 + 按 entry 启动，
+// host 侧不再手工 aclrtBinaryLoad*/GetFunction/KernelArgs
+extern void LaunchPocWrite(void *stream, PocKernelArgs args);
+extern void LaunchPocRead(void *stream, PocKernelArgs args);
 
 namespace {
 
@@ -48,9 +53,7 @@ struct PocOptions {
     uint16_t hcommPort = POC_DEFAULT_HCOMM_PORT;
     std::string eidHex;
     std::string rootinfo = "/etc/hccl_rootinfo.json";
-    std::string kernelPath = "./poc_aiv_hcomm_kernel.o";
     std::string verify = "write";           // write | read
-    int engineType = -1;                    // <0 = 不设置 ENGINE_TYPE attr（依赖 meta section）
     uint32_t statusTimeoutSec = 120;
 };
 
@@ -65,9 +68,7 @@ void Usage(const char *bin)
            "  --hcomm-port N      hcomm channel OOB socket port (default %u)\n"
            "  --eid 32HEX         override local EID (skip rootinfo)\n"
            "  --rootinfo PATH     rootinfo path (default /etc/hccl_rootinfo.json)\n"
-           "  --kernel-o PATH     AIV kernel object (default ./poc_aiv_hcomm_kernel.o)\n"
            "  --verify write|read write: client->server write path; read: client pull from server\n"
-           "  --engine-type N     force launch attr ENGINE_TYPE value (default: not set)\n"
            "  --status-timeout S  channel ready wait timeout seconds (default %u)\n",
            bin, POC_DEFAULT_OOB_PORT, (unsigned long long)POC_DEFAULT_BUF_SIZE,
            (unsigned long long)POC_DEFAULT_CHUNK, POC_DEFAULT_HCOMM_PORT, 120U);
@@ -102,12 +103,8 @@ int ParseArgs(int argc, char **argv, PocOptions &opt)
             opt.eidHex = next("--eid");
         } else if (k == "--rootinfo") {
             opt.rootinfo = next("--rootinfo");
-        } else if (k == "--kernel-o") {
-            opt.kernelPath = next("--kernel-o");
         } else if (k == "--verify") {
             opt.verify = next("--verify");
-        } else if (k == "--engine-type") {
-            opt.engineType = atoi(next("--engine-type"));
         } else if (k == "--status-timeout") {
             opt.statusTimeoutSec = static_cast<uint32_t>(atoi(next("--status-timeout")));
         } else if (k == "--help" || k == "-h") {
@@ -213,45 +210,6 @@ int CheckBuffer(PocDynApi &api, void *devBuf, uint64_t size, uint64_t salt, size
     return 0;
 }
 
-int LaunchAivKernel(PocDynApi &api, aclrtFuncHandle func, void *stream, const PocKernelArgs &args,
-                    int engineType)
-{
-    aclrtArgsHandle argsHandle = nullptr;
-    int32_t ret = api.aclrtKernelArgsInit(func, &argsHandle);
-    if (ret != 0) {
-        printf("[POC][ERROR] KernelArgsInit ret=%d\n", ret);
-        return ret;
-    }
-    aclrtParamHandle paramHandle = nullptr;
-    PocKernelArgs argsCopy = args;
-    ret = api.aclrtKernelArgsAppend(argsHandle, &argsCopy, sizeof(argsCopy), &paramHandle);
-    if (ret != 0) {
-        printf("[POC][ERROR] KernelArgsAppend ret=%d\n", ret);
-        return ret;
-    }
-    ret = api.aclrtKernelArgsFinalize(argsHandle);
-    if (ret != 0) {
-        printf("[POC][ERROR] KernelArgsFinalize ret=%d\n", ret);
-        return ret;
-    }
-
-    PocLaunchKernelAttr attrs[2] = {};
-    size_t numAttrs = 0;
-    if (engineType >= 0) {
-        attrs[numAttrs].id = POC_ATTR_ENGINE_TYPE;
-        attrs[numAttrs].value.engineType = static_cast<uint32_t>(engineType);
-        numAttrs++;
-    }
-    attrs[numAttrs].id = POC_ATTR_TIMEOUT;
-    attrs[numAttrs].value.timeout = 600;
-    numAttrs++;
-
-    PocLaunchKernelCfg cfg {};
-    cfg.attrs = attrs;
-    cfg.numAttrs = numAttrs;
-    return api.aclrtLaunchKernelWithConfig(func, 1U, stream, &cfg, argsHandle, nullptr);
-}
-
 }  // namespace
 
 int main(int argc, char **argv)
@@ -288,7 +246,6 @@ int main(int argc, char **argv)
     std::vector<uint8_t> peerMemDesc;
     ChannelHandle channel = 0;
     int oobFd = -1;
-    aclrtBinHandle binHandle = nullptr;
 
     do {
         // ── 1. ACL 基础初始化 ──
@@ -513,40 +470,7 @@ int main(int argc, char **argv)
                 }
             }
 
-            // 裸 ELF 镜像加载走 FromData + VECTOR_CORE magic，对齐官方运行时链
-            // （asc-devkit RegisterAscendBinary，即 ASC <<<>>> 展开后的加载路径）；
-            // FromFile 的设计输入是 AICPU 内核包 json，对裸 .o 会加载成功但函数表为空
-            // -> aclrtBinaryGetFunction 报 107000（Cannot find kernel by name）
-            std::ifstream kernelFile(opt.kernelPath, std::ios::binary);
-            if (!kernelFile) {
-                printf("[POC][ERROR] open kernel image failed: %s\n", opt.kernelPath.c_str());
-                break;
-            }
-            std::vector<char> kernelBin((std::istreambuf_iterator<char>(kernelFile)), std::istreambuf_iterator<char>());
-            if (kernelBin.empty()) {
-                printf("[POC][ERROR] kernel image is empty: %s\n", opt.kernelPath.c_str());
-                break;
-            }
-            printf("[POC] kernel image: %s (%zu bytes)\n", opt.kernelPath.c_str(), kernelBin.size());
-
-            PocBinaryLoadOption loadOpt {};
-            loadOpt.type = PocBinaryLoadOptionType::MAGIC;
-            loadOpt.value.magic = POC_BINARY_MAGIC_ELF_VECTOR_CORE;
-            PocBinaryLoadOptions loadOpts {&loadOpt, 1};
-            ret = api.aclrtBinaryLoadFromData(kernelBin.data(), kernelBin.size(), &loadOpts, &binHandle);
-            if (ret != 0 || binHandle == nullptr) {
-                printf("[POC][ERROR] aclrtBinaryLoadFromData(%s) ret=%d\n", opt.kernelPath.c_str(), ret);
-                break;
-            }
-            const char *funcName = (opt.verify == "write") ? "poc_hcomm_write" : "poc_hcomm_read";
-            aclrtFuncHandle func = nullptr;
-            ret = api.aclrtBinaryGetFunction(binHandle, funcName, &func);
-            if (ret != 0 || func == nullptr) {
-                printf("[POC][ERROR] aclrtBinaryGetFunction(%s) ret=%d\n", funcName, ret);
-                break;
-            }
-            printf("[POC] kernel loaded: %s\n", funcName);
-
+            // 内核镜像已由 ASC 编译器内嵌（<<<>>> 启动链自动注册），host 无需手工加载
             PocKernelArgs args {};
             args.channel = channel;
             args.localAddr = reinterpret_cast<uint64_t>(devBuf);
@@ -556,7 +480,12 @@ int main(int argc, char **argv)
             args.statusAddr = reinterpret_cast<uint64_t>(statusBuf);
 
             const uint64_t t0 = PocNowUs();
-            ret = LaunchAivKernel(api, func, stream, args, opt.engineType);
+            if (opt.verify == "write") {
+                LaunchPocWrite(stream, args);
+            } else {
+                LaunchPocRead(stream, args);
+            }
+            ret = api.aclrtSynchronizeStream(stream);
             if (ret != 0) {
                 printf("[POC][ERROR] launch kernel ret=%d\n", ret);
                 break;

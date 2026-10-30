@@ -10,9 +10,10 @@
  * See the Mulan PSL v2 for more details.
  *
  * PoC 内核公共部分（write/read 两个 kernel 文件共用）。
- * 注意：ascendc 工具链要求每个编译单元只定义一个 kernel 函数，
- * 多 kernel 同文件会导致 BinaryGetFunction 查不到内核名（注册表被覆盖），
- * 因此公共辅助提取到本头文件，kernel 本体分文件实现。
+ * 本工程走 ASC 语言路径（find_package(ASC) + LANGUAGE ASC，bisheng 一次编译）：
+ *   - kernel 函数用 __vector__ 修饰，类型标识/注册/镜像内嵌由编译器自动生成
+ *   - 无需手写 .ascend.meta 段与 EXPORT_AIV_META_INFO（那是 tikcpp ascendc_library 路径的做法）
+ * 注意：每个编译单元只定义一个 kernel 函数（工具链约束），公共辅助提取到本头文件。
  */
 
 #ifndef POC_KERNEL_COMMON_H
@@ -21,33 +22,6 @@
 #include "kernel_operator.h"
 #include "adv_api/hcomm/hcomm.h"
 #include "poc_common.h"
-
-// 函数级 meta：标识本 kernel 为 AIV 类型（值取自 CANN KernelType 枚举，K_TYPE_AIV=3，
-// F_TYPE_KTYPE=1，布局与 hcomm AIV 算子开发指南一致）。
-// 注意：ascendc_library 构建路径必须手写本段——auto_gen 会把内核名宏化（xxx -> xxx_origin），
-// __vector__（__attribute__((aiv))）属性与内核函数的绑定会被宏破坏导致编译错误；
-// __vector__ 自动生成 meta 仅适用于 ASC 语言路径（cmake LANGUAGES ASC），与本工程无关。
-#ifndef POC_FUN_LEVEL_KTYPE_DEFINED
-#define POC_FUN_LEVEL_KTYPE_DEFINED
-struct PocBaseTlv {
-    unsigned short type;
-    unsigned short len;
-};
-struct PocFunMetaKType {
-    PocBaseTlv head;
-    unsigned int ktype;
-};
-struct PocFunLevelKType {
-    struct PocFunMetaKType ktypeMeta;
-};
-constexpr unsigned short POC_F_TYPE_KTYPE = 1;
-constexpr unsigned int POC_K_TYPE_AIV = 3;
-#endif
-
-#define EXPORT_AIV_META_INFO(kernel_name)                                                              \
-    static const struct PocFunLevelKType kernel_name##_kernel_type_section __attribute__(              \
-        (used, section(".ascend.meta." #kernel_name))) = {{POC_F_TYPE_KTYPE, sizeof(unsigned int),     \
-                                                            POC_K_TYPE_AIV}};
 
 using namespace AscendC;
 

@@ -6,9 +6,8 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PEER_IP="${1:?usage: run_client.sh <server_ip> [device_id]}"
 DEVICE="${2:-0}"
 
-"${DIR}/build/host/poc_aiv_urma" \
+"${DIR}/build/poc/poc_aiv_urma" \
     --role client \
     --peer-ip "${PEER_IP}" \
     --device "${DEVICE}" \
-    --verify write \
-    --kernel-o "$(find "${DIR}/build/kernel" -name 'poc_hcomm_kernel.o' | head -1)"
+    --verify write

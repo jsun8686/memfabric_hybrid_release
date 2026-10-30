@@ -44,13 +44,6 @@ int PocDynApi::Load(const std::string &ascendHome)
     POC_DLSYM(rtGetDeviceInfo, aclHandle, "rtGetDeviceInfo");
     // OPTIONAL：部分 CANN 版本未导出（MemFabric 同为 OPTIONAL），缺失时调用方 fallback 用 logicId
     POC_DLSYM_OPT(aclrtGetPhyDevIdByLogicDevId, aclHandle, "aclrtGetPhyDevIdByLogicDevId");
-    POC_DLSYM(aclrtBinaryLoadFromFile, aclHandle, "aclrtBinaryLoadFromFile");
-    POC_DLSYM(aclrtBinaryLoadFromData, aclHandle, "aclrtBinaryLoadFromData");
-    POC_DLSYM(aclrtBinaryGetFunction, aclHandle, "aclrtBinaryGetFunction");
-    POC_DLSYM(aclrtKernelArgsInit, aclHandle, "aclrtKernelArgsInit");
-    POC_DLSYM(aclrtKernelArgsAppend, aclHandle, "aclrtKernelArgsAppend");
-    POC_DLSYM(aclrtKernelArgsFinalize, aclHandle, "aclrtKernelArgsFinalize");
-    POC_DLSYM(aclrtLaunchKernelWithConfig, aclHandle, "aclrtLaunchKernelWithConfig");
 
     void *hcommHandle = nullptr;
     libPath = ascendHome + "/lib64/libhcomm.so";
