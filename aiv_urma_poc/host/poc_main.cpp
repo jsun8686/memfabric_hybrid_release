@@ -512,7 +512,13 @@ int main(int argc, char **argv)
                 }
             }
 
-            ret = api.aclrtBinaryLoadFromFile(opt.kernelPath.c_str(), nullptr, &binHandle);
+            // AIV 镜像必须带 VECTOR_CORE magic 加载（对齐 asc-devkit RegisterAscendBinary 的 AIVEC 路径），
+            // 否则 GetFunction 查不到内核名
+            PocBinaryLoadOption loadOpt {};
+            loadOpt.type = PocBinaryLoadOptionType::MAGIC;
+            loadOpt.value.magic = POC_BINARY_MAGIC_ELF_VECTOR_CORE;
+            PocBinaryLoadOptions loadOpts {&loadOpt, 1};
+            ret = api.aclrtBinaryLoadFromFile(opt.kernelPath.c_str(), &loadOpts, &binHandle);
             if (ret != 0 || binHandle == nullptr) {
                 printf("[POC][ERROR] aclrtBinaryLoadFromFile(%s) ret=%d\n", opt.kernelPath.c_str(), ret);
                 break;

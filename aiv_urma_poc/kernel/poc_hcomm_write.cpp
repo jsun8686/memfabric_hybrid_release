@@ -16,7 +16,8 @@
 
 #include "poc_kernel_common.h"
 
-extern "C" __global__ __aicore__ void poc_hcomm_write(PocKernelArgs args)
+// __vector__ 修饰符：标识 vector core（AIV）内核，工具链据此自动生成类型 meta
+extern "C" __vector__ __global__ __aicore__ void poc_hcomm_write(PocKernelArgs args)
 {
     if (GetBlockIdx() != 0) {
         return;
@@ -25,4 +26,3 @@ extern "C" __global__ __aicore__ void poc_hcomm_write(PocKernelArgs args)
     const int32_t ret = PocTransferImpl(&args, false);
     PocWriteStatus(args.statusAddr, (ret == 0) ? POC_STATUS_OK : (POC_STATUS_FAIL_BASE + ret));
 }
-EXPORT_AIV_META_INFO(poc_hcomm_write)

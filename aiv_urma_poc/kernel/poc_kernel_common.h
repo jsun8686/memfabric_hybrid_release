@@ -22,29 +22,9 @@
 #include "adv_api/hcomm/hcomm.h"
 #include "poc_common.h"
 
-// 函数级 meta：标识本 kernel 为 AIV 类型（值取自 CANN KernelType 枚举，K_TYPE_AIV=3，
-// F_TYPE_KTYPE=1，布局与 hcomm AIV 算子开发指南一致）
-#ifndef POC_FUN_LEVEL_KTYPE_DEFINED
-#define POC_FUN_LEVEL_KTYPE_DEFINED
-struct PocBaseTlv {
-    unsigned short type;
-    unsigned short len;
-};
-struct PocFunMetaKType {
-    PocBaseTlv head;
-    unsigned int ktype;
-};
-struct PocFunLevelKType {
-    struct PocFunMetaKType ktypeMeta;
-};
-constexpr unsigned short POC_F_TYPE_KTYPE = 1;
-constexpr unsigned int POC_K_TYPE_AIV = 3;
-#endif
-
-#define EXPORT_AIV_META_INFO(kernel_name)                                                              \
-    static const struct PocFunLevelKType kernel_name##_kernel_type_section __attribute__(              \
-        (used, section(".ascend.meta." #kernel_name))) = {{POC_F_TYPE_KTYPE, sizeof(unsigned int),     \
-                                                            POC_K_TYPE_AIV}};
+// 类型 meta（.ascend.meta 段）不手写：kernel 函数带 __vector__ 修饰符即可让工具链
+// 自动生成 AIV 类型标识（对齐官方 asc-comm 示例 01_hcomm_write_read_nbi 的写法），
+// 手写段与自动生成流程叠加反而可能导致 aclrtBinaryGetFunction 查不到内核名。
 
 using namespace AscendC;
 
@@ -63,7 +43,8 @@ static inline __aicore__ void PocWriteStatus(uint64_t statusAddr, uint64_t value
 static inline __aicore__ int32_t PocTransferImpl(const PocKernelArgs *args, bool isRead)
 {
     TPipe pipe;
-    TBuf<TPosition::VECCALC> wsBuf;
+    // 官方 01 示例：hcomm workspace 用 VECOUT 位置
+    TBuf<TPosition::VECOUT> wsBuf;
     pipe.InitBuffer(wsBuf, POC_HCOMM_WS_SIZE);
     LocalTensor<uint8_t> ws = wsBuf.Get<uint8_t>();
 

@@ -21,10 +21,12 @@ using aclrtParamHandle = void *;
 
 enum class PocBinaryLoadOptionType : int32_t {
     LAZY_LOAD = 1,
+    MAGIC = 2,  // ACL_RT_BINARY_LOAD_OPT_MAGIC：显式声明二进制内核类型
     CPU_KERNEL_MODE = 3,
 };
 union PocBinaryLoadOptionValue {
     uint32_t isLazyLoad;
+    uint32_t magic;
     int32_t cpuKernelMode;
     uint32_t rsv[4];
 };
@@ -36,6 +38,11 @@ struct PocBinaryLoadOptions {
     PocBinaryLoadOption *options;
     size_t numOpt;
 };
+
+// AIV(vector core) 设备镜像的 ELF 类型 magic（取值与 acl_rt.h 一致，参照 hcomm 仓 vendor 副本：
+// ACL_RT_BINARY_MAGIC_ELF_VECTOR_CORE = 0x41415246U）。加载 device_aiv.o 时必须带此选项，
+// 否则 runtime 按默认 AI Core 语义解析，函数表为空 -> aclrtBinaryGetFunction 报 107000
+constexpr uint32_t POC_BINARY_MAGIC_ELF_VECTOR_CORE = 0x41415246U;
 
 enum PocLaunchKernelAttrId {
     POC_ATTR_SCHEM_MODE = 1,
