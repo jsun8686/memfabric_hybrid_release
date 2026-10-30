@@ -9,12 +9,14 @@
  * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
  * See the Mulan PSL v2 for more details.
  *
- * AIV direct-drive URMA PoC kernel (A5 / __NPU_ARCH__ 3510).
- * 验证目标：
- *   1. AscendC::Hcomm<UBC_CTP> 在 AIV 核上 Init/WriteNbi/ReadNbi/Commit/Drain 全流程
- *   2. channel handle 由 host 直接下传即可定位设备侧 ChannelEntity
- *   3. Drain 返回后数据可见性成立（host 侧 memcmp 校验）
+ * PoC 内核公共部分（write/read 两个 kernel 文件共用）。
+ * 注意：ascendc 工具链要求每个编译单元只定义一个 kernel 函数，
+ * 多 kernel 同文件会导致 BinaryGetFunction 查不到内核名（注册表被覆盖），
+ * 因此公共辅助提取到本头文件，kernel 本体分文件实现。
  */
+
+#ifndef POC_KERNEL_COMMON_H
+#define POC_KERNEL_COMMON_H
 
 #include "kernel_operator.h"
 #include "adv_api/hcomm/hcomm.h"
@@ -42,20 +44,22 @@ constexpr unsigned int POC_K_TYPE_AIV = 3;
 #define EXPORT_AIV_META_INFO(kernel_name)                                                              \
     static const struct PocFunLevelKType kernel_name##_kernel_type_section __attribute__(              \
         (used, section(".ascend.meta." #kernel_name))) = {{POC_F_TYPE_KTYPE, sizeof(unsigned int),     \
-                                                           POC_K_TYPE_AIV}};
+                                                            POC_K_TYPE_AIV}};
 
 using namespace AscendC;
 
 constexpr uint32_t POC_HCOMM_WS_SIZE = 512;  // HCOMM_URMA_TMP_BUF_SIZE，32 字节对齐由 TBuf 保证
 
 // 单核执行：PoC 只需一个 vector core 驱动一条 channel（多核切分属于阶段 1 工作）
-static inline __aicore__ void WriteStatus(uint64_t statusAddr, uint64_t value)
+static inline __aicore__ void PocWriteStatus(uint64_t statusAddr, uint64_t value)
 {
     if (statusAddr != 0) {
         *(volatile uint64_t *)statusAddr = value;
     }
 }
 
+// 传输公共实现：Init(512B UB workspace) -> 分块 Nbi(commit=false) -> Commit -> Drain
+// 错误码分段：0x1xx=Init 失败、0x2xx=分块 Nbi 失败（内嵌偏移与返回码）、0x3xx=Commit、0x4xx=Drain
 static inline __aicore__ int32_t PocTransferImpl(const PocKernelArgs *args, bool isRead)
 {
     TPipe pipe;
@@ -101,24 +105,4 @@ static inline __aicore__ int32_t PocTransferImpl(const PocKernelArgs *args, bool
     return 0;
 }
 
-extern "C" __global__ __aicore__ void poc_hcomm_write(PocKernelArgs args)
-{
-    if (GetBlockIdx() != 0) {
-        return;
-    }
-    WriteStatus(args.statusAddr, POC_STATUS_PENDING);
-    const int32_t ret = PocTransferImpl(&args, false);
-    WriteStatus(args.statusAddr, (ret == 0) ? POC_STATUS_OK : (POC_STATUS_FAIL_BASE + ret));
-}
-EXPORT_AIV_META_INFO(poc_hcomm_write)
-
-extern "C" __global__ __aicore__ void poc_hcomm_read(PocKernelArgs args)
-{
-    if (GetBlockIdx() != 0) {
-        return;
-    }
-    WriteStatus(args.statusAddr, POC_STATUS_PENDING);
-    const int32_t ret = PocTransferImpl(&args, true);
-    WriteStatus(args.statusAddr, (ret == 0) ? POC_STATUS_OK : (POC_STATUS_FAIL_BASE + ret));
-}
-EXPORT_AIV_META_INFO(poc_hcomm_read)
+#endif  // POC_KERNEL_COMMON_H

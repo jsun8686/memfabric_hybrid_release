@@ -26,8 +26,11 @@ message(STATUS "poc kernel: ASC_DEVKIT_ROOT = ${ASC_DEVKIT_ROOT}")
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/config_ascendc.cmake)
 
+# 一个编译单元只放一个 kernel 函数（工具链要求；多 kernel 同文件会导致
+# BinaryGetFunction 按名查不到内核），公共辅助在 poc_kernel_common.h
 ascendc_library(poc_aiv_hcomm_kernel STATIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/poc_hcomm_kernel.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/poc_hcomm_write.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/poc_hcomm_read.cpp
 )
 
 ascendc_include_directories(poc_aiv_hcomm_kernel PRIVATE
