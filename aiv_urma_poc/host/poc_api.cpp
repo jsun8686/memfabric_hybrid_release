@@ -38,21 +38,18 @@ int PocDynApi::Load(const std::string &ascendHome)
     POC_DLSYM(aclrtDestroyStream, aclHandle, "aclrtDestroyStream");
     POC_DLSYM(aclrtSynchronizeStream, aclHandle, "aclrtSynchronizeStream");
 
-    void *rtHandle = nullptr;
-    libPath = ascendHome + "/lib64/libruntime.so";
-    if (LoadOneLib(rtHandle, libPath) != 0) {
-        return -1;
-    }
-    POC_DLSYM(rtGetDeviceInfo, rtHandle, "rtGetDeviceInfo");
-    // CANN 9.1.0 的 libruntime 未导出该符号（MemFabric dl_acl_api.cpp 同样按 OPTIONAL 加载），
-    // 缺失时调用方 fallback 用 logicId（对齐 urma_topo_manager.cpp SetDeviceIdentity 行为）
-    POC_DLSYM_OPT(aclrtGetPhyDevIdByLogicDevId, rtHandle, "aclrtGetPhyDevIdByLogicDevId");
-    POC_DLSYM(aclrtBinaryLoadFromFile, rtHandle, "aclrtBinaryLoadFromFile");
-    POC_DLSYM(aclrtBinaryGetFunction, rtHandle, "aclrtBinaryGetFunction");
-    POC_DLSYM(aclrtKernelArgsInit, rtHandle, "aclrtKernelArgsInit");
-    POC_DLSYM(aclrtKernelArgsAppend, rtHandle, "aclrtKernelArgsAppend");
-    POC_DLSYM(aclrtKernelArgsFinalize, rtHandle, "aclrtKernelArgsFinalize");
-    POC_DLSYM(aclrtLaunchKernelWithConfig, rtHandle, "aclrtLaunchKernelWithConfig");
+    // 对齐 MemFabric dl_acl_api.cpp：只 dlopen libascendcl.so 一个库，
+    // aclrt* 公开接口与 rt* 内部接口（rtGetDeviceInfo 等）均由 libascendcl.so 导出；
+    // 不再单独加载 libruntime.so（CANN 9.1.0 的 libruntime 不导出 launch 系列 aclrt* 符号）。
+    POC_DLSYM(rtGetDeviceInfo, aclHandle, "rtGetDeviceInfo");
+    // OPTIONAL：部分 CANN 版本未导出（MemFabric 同为 OPTIONAL），缺失时调用方 fallback 用 logicId
+    POC_DLSYM_OPT(aclrtGetPhyDevIdByLogicDevId, aclHandle, "aclrtGetPhyDevIdByLogicDevId");
+    POC_DLSYM(aclrtBinaryLoadFromFile, aclHandle, "aclrtBinaryLoadFromFile");
+    POC_DLSYM(aclrtBinaryGetFunction, aclHandle, "aclrtBinaryGetFunction");
+    POC_DLSYM(aclrtKernelArgsInit, aclHandle, "aclrtKernelArgsInit");
+    POC_DLSYM(aclrtKernelArgsAppend, aclHandle, "aclrtKernelArgsAppend");
+    POC_DLSYM(aclrtKernelArgsFinalize, aclHandle, "aclrtKernelArgsFinalize");
+    POC_DLSYM(aclrtLaunchKernelWithConfig, aclHandle, "aclrtLaunchKernelWithConfig");
 
     void *hcommHandle = nullptr;
     libPath = ascendHome + "/lib64/libhcomm.so";
@@ -73,6 +70,6 @@ int PocDynApi::Load(const std::string &ascendHome)
     POC_DLSYM(HcommChannelGetStatus, hcommHandle, "HcommChannelGetStatus");
     POC_DLSYM(HcommChannelDestroy, hcommHandle, "HcommChannelDestroy");
 
-    printf("[POC] all dynamic symbols loaded (libascendcl / libruntime / libhcomm)\n");
+    printf("[POC] all dynamic symbols loaded (libascendcl + libhcomm)\n");
     return 0;
 }
