@@ -204,6 +204,12 @@ int CheckBuffer(PocDynApi &api, void *devBuf, uint64_t size, uint64_t salt, size
         const uint64_t expect = ((uint64_t)i * 0x9E3779B97F4A7C15ULL) ^ salt;
         if (host[i] != expect) {
             firstBadIdx = i;
+            // dump 诊断：首个坏 word 与前 4 个 word 实际值，区分"未写入（全 0）/错位/内容翻转"
+            printf("[POC][DEBUG] first mismatch at word %zu: actual=0x%016llx expected=0x%016llx\n", i,
+                   (unsigned long long)host[i], (unsigned long long)expect);
+            for (size_t j = 0; j < 4 && j < words; j++) {
+                printf("[POC][DEBUG] word[%zu]=0x%016llx\n", j, (unsigned long long)host[j]);
+            }
             return 1;
         }
     }
