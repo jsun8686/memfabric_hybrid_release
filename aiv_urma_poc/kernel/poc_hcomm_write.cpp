@@ -13,7 +13,7 @@
  * 本地 GM -> 对端 GM（AscendC::Hcomm<UBC_CTP>::WriteNbi -> Commit -> Drain）。
  * 单独成文件：每个编译单元一个 kernel 函数。
  * __vector__ 修饰符：标识 vector core（AIV）内核，ASC 编译器据此自动生成类型
- * 标识与注册信息（镜像内嵌，host 侧无需手工 aclrtBinaryLoad*/GetFunction）。
+ * 标识与注册信息（镜像内嵌，host 侧无需手工调用 aclrtBinaryLoad、GetFunction 系列 API）。
  */
 
 #include "poc_kernel_common.h"
