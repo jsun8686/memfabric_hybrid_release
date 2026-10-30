@@ -65,6 +65,15 @@ constexpr int32_t POC_INFO_TYPE_SUPER_POD_ID = 28;
 constexpr int32_t POC_INFO_TYPE_MAINBOARD_ID = 39;
 
 // ─────────────────────── dlsym 加载 ───────────────────────
+// 可选符号加载：缺失仅 WARN 不退出（调用方需判空并走 fallback）
+#define POC_DLSYM_OPT(var, handle, name)                                                                    \
+    do {                                                                                                   \
+        (var) = reinterpret_cast<decltype(var)>(dlsym((handle), (name)));                                  \
+        if ((var) == nullptr) {                                                                            \
+            printf("[POC][WARN] dlsym %s not exported by this runtime, caller should fallback\n", (name));  \
+        }                                                                                                  \
+    } while (0)
+
 #define POC_DLSYM(var, handle, name)                                                                       \
     do {                                                                                                   \
         (var) = reinterpret_cast<decltype(var)>(dlsym((handle), (name)));                                  \

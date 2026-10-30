@@ -44,7 +44,9 @@ int PocDynApi::Load(const std::string &ascendHome)
         return -1;
     }
     POC_DLSYM(rtGetDeviceInfo, rtHandle, "rtGetDeviceInfo");
-    POC_DLSYM(aclrtGetPhyDevIdByLogicDevId, rtHandle, "aclrtGetPhyDevIdByLogicDevId");
+    // CANN 9.1.0 的 libruntime 未导出该符号（MemFabric dl_acl_api.cpp 同样按 OPTIONAL 加载），
+    // 缺失时调用方 fallback 用 logicId（对齐 urma_topo_manager.cpp SetDeviceIdentity 行为）
+    POC_DLSYM_OPT(aclrtGetPhyDevIdByLogicDevId, rtHandle, "aclrtGetPhyDevIdByLogicDevId");
     POC_DLSYM(aclrtBinaryLoadFromFile, rtHandle, "aclrtBinaryLoadFromFile");
     POC_DLSYM(aclrtBinaryGetFunction, rtHandle, "aclrtBinaryGetFunction");
     POC_DLSYM(aclrtKernelArgsInit, rtHandle, "aclrtKernelArgsInit");

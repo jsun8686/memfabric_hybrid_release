@@ -311,11 +311,16 @@ int main(int argc, char **argv)
             printf("[POC][ERROR] aclrtGetDevice ret=%d\n", ret);
             break;
         }
-        int32_t phyId = -1;
-        ret = api.aclrtGetPhyDevIdByLogicDevId(userId, &phyId);
-        if (ret != 0) {
-            printf("[POC][ERROR] aclrtGetPhyDevIdByLogicDevId ret=%d\n", ret);
-            break;
+        // 对齐 MemFabric urma_topo_manager.cpp SetDeviceIdentity：符号缺失/调用失败时 fallback 用 logicId
+        int32_t phyId = userId;
+        if (api.aclrtGetPhyDevIdByLogicDevId != nullptr) {
+            ret = api.aclrtGetPhyDevIdByLogicDevId(userId, &phyId);
+            if (ret != 0) {
+                printf("[POC][WARN] aclrtGetPhyDevIdByLogicDevId ret=%d, fallback phyId=logicId=%d\n", ret, userId);
+                phyId = userId;
+            }
+        } else {
+            printf("[POC][WARN] aclrtGetPhyDevIdByLogicDevId unavailable, fallback phyId=logicId=%d\n", userId);
         }
         int64_t v = 0;
         if (api.rtGetDeviceInfo(static_cast<uint32_t>(userId), 0, POC_INFO_TYPE_SDID, &v) != 0) {
