@@ -10,7 +10,9 @@
 #     aclrtCreateBinary -> aclrtBinaryLoad -> aclrtBinaryGetFunction(原名)
 #     -> aclrtLaunchKernelWithHostArgs（attr 带 ACL_RT_ENGINE_TYPE_AIV）
 # 前置：source <CANN>/set_env.sh（ASCEND_HOME_PATH 生效）
-# 架构：export ASCEND_COMPUTE_UNIT=dav-3510（A5 = Ascend 950PR/950DT，build.sh 已默认带）
+# 板型：SOC_VERSION 默认 ascend950pr_9599（A5 = Ascend 950PR），
+#       950DT 或其他变体用 cmake -DSOC_VERSION=ascend950dt_<id> 或
+#       build.sh 的 POC_SOC_VERSION=<值> 覆盖（见下方 SOC_VERSION 注释）
 # 构建：./build.sh（产物 build/poc/poc_aiv_urma + build/poc/poc_hcomm_kernel.o）
 # ----------------------------------------------------------------------------------------------------------
 
@@ -28,6 +30,19 @@ endif()
 if(NOT DEFINED ENV{ASCEND_HOME_PATH})
     message(FATAL_ERROR "ASCEND_HOME_PATH not set, please source CANN set_env.sh first")
 endif()
+
+# SOC_VERSION：legacy ascendc.cmake 路径的必填 CMake 变量
+# （tools/tikcpp/ascendc_kernel_cmake/legacy_modules/host_config.cmake 强校验，
+#  未定义直接 FATAL_ERROR "SOC_VERSION value not set."；它不认 fwk/opp 路径用的
+#  环境变量 ASCEND_COMPUTE_UNIT）。
+# A5 取值：950PR -> ascend950pr_<id>，950DT -> ascend950dt_<id>；
+# 合法全集见 host_config.cmake 的 ascend950_list，或对照本机已安装的平台配置：
+#   ls $ASCEND_HOME_PATH/compiler/data/platform_config/ | grep -i 950
+# 板型确认：npu-smi info -t board -i <npu_id>
+if(NOT DEFINED SOC_VERSION)
+    set(SOC_VERSION "ascend950pr_9599" CACHE STRING "SoC version for ascendc fatbin build (A5: ascend950pr_<id> / ascend950dt_<id>)")
+endif()
+message(STATUS "poc: SOC_VERSION = ${SOC_VERSION}")
 
 # ascendc_fatbin_library 来自 CANN 自带 ascendc_kernel_cmake（纯设备侧编译，无需 ASC 语言工具链）
 set(ASCENDC_CMAKE "$ENV{ASCEND_HOME_PATH}/tools/tikcpp/ascendc_kernel_cmake/ascendc.cmake")
@@ -54,7 +69,9 @@ ascendc_fatbin_library(poc_hcomm_kernel
     ${CMAKE_CURRENT_SOURCE_DIR}/kernel/poc_hcomm_read.cpp
 )
 if(COMMAND ascendc_include_directories)
-    ascendc_include_directories(
+    # 注意签名：ascendc_include_directories(<target> <scope> <dirs...>)，
+    # 内部写入 <target>_interface 的 INCLUDES 属性传递给设备侧子工程
+    ascendc_include_directories(poc_hcomm_kernel PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/common
         ${ASC_DEVKIT_ROOT}/include
     )

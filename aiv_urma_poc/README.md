@@ -55,7 +55,8 @@ source /usr/local/Ascend/cann/set_env.sh   # ASCEND_HOME_PATH 生效
 cd aiv_urma_poc
 ./build.sh
 # 产物：build/poc/poc_aiv_urma（host 可执行）+ build/poc/poc_hcomm_kernel.o（fatbin 算子二进制）
-# fatbin 目标架构由 ASCEND_COMPUTE_UNIT 决定（build.sh 默认 dav-3510，可用 POC_ASC_COMPUTE_UNIT 覆盖）
+# fatbin 目标 SOC 由 CMake 变量 SOC_VERSION 决定（build.sh 默认 ascend950pr_9599，
+# 950DT/其他变体用 POC_SOC_VERSION=<值> ./build.sh 覆盖）
 ```
 
 构建后建议先验收 fatbin 符号（方案 B 的关键不变量：符号保持原始名，无 `_0/_1` 后缀）：
@@ -121,7 +122,9 @@ read 路径（client AIV 内核从 server 拉）：
 |------|------|
 | `dlopen libhcomm.so failed` | 确认 CANN 安装含 hcomm 组件，或设 `LD_LIBRARY_PATH` 后重试；PoC 依次尝试 `<CANN>/lib64` 与 `<CANN>/runtime/lib64/hcomm` |
 | `ascendc.cmake not found` | 确认 `$ASCEND_HOME_PATH/tools/tikcpp/ascendc_kernel_cmake/ascendc.cmake` 存在；确认 `set_env.sh` 已 source |
-| fatbin 编译报 unknown arch | `ASCEND_COMPUTE_UNIT` 与芯片不匹配：查 ascendc.cmake 支持的取值，用 `POC_ASC_COMPUTE_UNIT=<值> ./build.sh` 覆盖（A5 默认 dav-3510） |
+| `SOC_VERSION value not set.` | legacy ascendc_kernel_cmake 只认 CMake 变量 `SOC_VERSION`（不认 `ASCEND_COMPUTE_UNIT`）：build.sh 已默认传 `ascend950pr_9599`；若手工 cmake 需加 `-DSOC_VERSION=<值>` |
+| `SOC_VERSION ... does not support` | 取值与 host_config.cmake 的 `ascend950_list` 不符：`grep -n ascend950_list $ASCEND_HOME_PATH/tools/tikcpp/ascendc_kernel_cmake/legacy_modules/host_config.cmake`，或 `ls $ASCEND_HOME_PATH/compiler/data/platform_config/ \| grep -i 950` 对照本机已装平台配置，再用 `POC_SOC_VERSION=<值> ./build.sh` 覆盖（950DT 机器必须改） |
+| `ASCEND_CANN_PACKAGE_PATH ... does not exist` | 未 source `set_env.sh` 或安装布局特殊：`export ASCEND_CANN_PACKAGE_PATH=$ASCEND_HOME_PATH` 后重试 |
 | `fatbin output not found` | `cmake --install` 未落盘：检查 `build/poc/fatbin/` 目录；或手工 `find build/poc -name 'poc_hcomm_kernel.o'` 后用 `--kernel-image` 指定 |
 | `aclrtBinaryGetFunction(xxx) ret=107000` | fatbin 中没有该名字的 GLOBAL FUNC 符号：`readelf -sW build/poc/poc_hcomm_kernel.o \| grep poc_hcomm`，若符号带 `_0/_1` 后缀说明误用了 ascendc_library 的中间产物而非本方案的 fatbin |
 | `HcommEndpointCreate ret!=0` | EID/协议与组网不符：核对 rootinfo 中 EID 归属、两机是否 UB_CTP 互联（PoC 不覆盖 UB_RTP/超节点 PC16 组网） |

@@ -13,16 +13,24 @@ if [ -z "${ASCEND_HOME_PATH}" ]; then
 fi
 echo "[POC] ASCEND_HOME_PATH = ${ASCEND_HOME_PATH}"
 
-# fatbin 目标架构：A5 = Ascend 950PR/950DT = dav-3510（ascendc.cmake 读取 ASCEND_COMPUTE_UNIT；
-# 若编译报 unknown arch，请查 $ASCEND_HOME_PATH/tools/tikcpp/ascendc_kernel_cmake/ascendc.cmake
-# 中该变量支持的取值，并用 POC_ASC_COMPUTE_UNIT=<值> 覆盖）
-export ASCEND_COMPUTE_UNIT="${POC_ASC_COMPUTE_UNIT:-dav-3510}"
-echo "[POC] ASCEND_COMPUTE_UNIT = ${ASCEND_COMPUTE_UNIT}"
+# SOC_VERSION：legacy ascendc_kernel_cmake 路径只认这个 CMake 变量
+# （host_config.cmake 强校验；环境变量 ASCEND_COMPUTE_UNIT 是 fwk/opp 框架路径用的，此处无效）。
+# A5 = 950PR/950DT：950PR 默认 ascend950pr_9599；950DT 或其他变体用
+#   POC_SOC_VERSION=ascend950dt_<id> ./build.sh 覆盖。
+# 合法取值清单：grep -n "ascend950_list" \
+#   $ASCEND_HOME_PATH/tools/tikcpp/ascendc_kernel_cmake/legacy_modules/host_config.cmake
+# 或对照本机平台配置：ls $ASCEND_HOME_PATH/compiler/data/platform_config/ | grep -i 950
+SOC_VERSION="${POC_SOC_VERSION:-ascend950pr_9599}"
+echo "[POC] SOC_VERSION = ${SOC_VERSION}"
+
+# host_config.cmake 还要求 ASCEND_CANN_PACKAGE_PATH 指向已安装的 CANN 包根目录
+export ASCEND_CANN_PACKAGE_PATH="${ASCEND_CANN_PACKAGE_PATH:-${ASCEND_HOME_PATH}}"
 
 # 全量清建：PoC 体量小，且 fatbin 增量行为未验证
 rm -rf "${BUILD_DIR}"
 
 cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" \
+    -DSOC_VERSION="${SOC_VERSION}" \
     -DASC_DEVKIT_ROOT="${ASC_DEVKIT_ROOT:-$HOME/asc-devkit}" \
     -DCMAKE_BUILD_TYPE=RELEASE \
     -DCMAKE_INSTALL_PREFIX="${BUILD_DIR}"
