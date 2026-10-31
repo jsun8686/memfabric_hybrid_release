@@ -60,11 +60,9 @@ static inline __aicore__ int32_t PocTransferImpl(const PocKernelArgs *args, bool
                              : reinterpret_cast<GM_ADDR>(args->remoteAddr + offset);
         GM_ADDR src = isRead ? reinterpret_cast<GM_ADDR>(args->remoteAddr + offset)
                              : reinterpret_cast<GM_ADDR>(args->localAddr + offset);
-        // commit 策略按方向区分：
-        //   write：<false> 攒 WQE，循环末尾一次 Commit（已验证 PASS）；
-        //   read：对齐官方 01 示例——每块立即提交（commit=true 逐块发布门铃），不额外调 Commit
+        // write/read 均使用 commit=false 先攒 WQE，循环结束后统一 Commit，验证批量提交路径
         if (isRead) {
-            ret = hcomm.template ReadNbi<true>(args->channel, dst, src, cur);
+            ret = hcomm.template ReadNbi<false>(args->channel, dst, src, cur);
         } else {
             ret = hcomm.template WriteNbi<false>(args->channel, dst, src, cur);
         }
@@ -74,12 +72,10 @@ static inline __aicore__ int32_t PocTransferImpl(const PocKernelArgs *args, bool
         offset += cur;
     }
 
-    if (!isRead) {
-        // write 方向：发布攒下的 WQE（read 方向每块已 commit，无需再调）
-        ret = hcomm.Commit(args->channel);
-        if (ret != 0) {
-            return 0x300 + ret;  // Commit 失败
-        }
+    // 发布循环中攒下的 WQE
+    ret = hcomm.Commit(args->channel);
+    if (ret != 0) {
+        return 0x300 + ret;  // Commit 失败
     }
     ret = hcomm.Drain(args->channel);
     if (ret != 0) {

@@ -216,6 +216,17 @@ int CheckBuffer(PocDynApi &api, void *devBuf, uint64_t size, uint64_t salt, size
     return 0;
 }
 
+// read 模式的完成握手：client 完成 ReadNbi/Drain/校验后通知 server，server 才能释放内存与通道
+int NotifyReadResult(int fd, bool success)
+{
+    const char sig = success ? 'D' : 'F';
+    if (PocTcp::SendAll(fd, &sig, 1) != 0) {
+        printf("[POC][ERROR] notify server read result (%c) failed\n", sig);
+        return -1;
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char **argv)
@@ -494,21 +505,37 @@ int main(int argc, char **argv)
             ret = api.aclrtSynchronizeStream(stream);
             if (ret != 0) {
                 printf("[POC][ERROR] launch kernel ret=%d\n", ret);
+                if (opt.verify == "read") {
+                    (void)NotifyReadResult(oobFd, false);
+                }
                 break;
             }
             ret = api.aclrtSynchronizeStream(stream);
             if (ret != 0) {
                 printf("[POC][ERROR] SynchronizeStream ret=%d\n", ret);
+                if (opt.verify == "read") {
+                    (void)NotifyReadResult(oobFd, false);
+                }
                 break;
             }
             const uint64_t t1 = PocNowUs();
 
             uint64_t statusHost = 0;
-            (void)api.aclrtMemcpy(&statusHost, sizeof(statusHost), statusBuf, sizeof(statusBuf), 2 /*D2H*/);
+            ret = api.aclrtMemcpy(&statusHost, sizeof(statusHost), statusBuf, sizeof(statusBuf), 2 /*D2H*/);
+            if (ret != 0) {
+                printf("[POC][ERROR] read kernel status ret=%d\n", ret);
+                if (opt.verify == "read") {
+                    (void)NotifyReadResult(oobFd, false);
+                }
+                break;
+            }
             printf("[POC] kernel done in %llu us, status=%llu\n", (unsigned long long)(t1 - t0),
                    (unsigned long long)statusHost);
             if (statusHost != POC_STATUS_OK) {
                 printf("[POC][ERROR] kernel status not OK: 0x%llx\n", (unsigned long long)statusHost);
+                if (opt.verify == "read") {
+                    (void)NotifyReadResult(oobFd, false);
+                }
                 break;
             }
 
@@ -516,6 +543,10 @@ int main(int argc, char **argv)
                 // 本地校验（read 模式：本地是校验方，salt 是 server 的）
                 size_t badIdx = 0;
                 const int chk = CheckBuffer(api, devBuf, opt.size, 0xA5A5A5A5A5A5A5A5ULL, badIdx);
+                // 无论成功失败都通知server，保证远端buffer/channel在client完成读操作前保持存活
+                if (NotifyReadResult(oobFd, chk == 0) != 0) {
+                    break;
+                }
                 if (chk != 0) {
                     printf("[POC][RESULT][FAIL] read verify mismatch, chk=%d firstBadWord=%zu\n", chk, badIdx);
                     break;
@@ -552,6 +583,19 @@ int main(int argc, char **argv)
                     break;
                 }
                 printf("[POC] server pattern ready, waiting client pull ...\n");
+
+                // client完成ReadNbi/Drain/本地校验后返回D，收到前必须保持远端buffer/channel存活
+                char done = 0;
+                if (PocTcp::RecvAll(oobFd, &done, 1) != 0) {
+                    printf("[POC][ERROR] wait client read-done signal failed\n");
+                    break;
+                }
+                if (done != 'D') {
+                    printf("[POC][ERROR] client read failed or returned unexpected signal: %c\n",
+                           (done != 0) ? done : '?');
+                    break;
+                }
+                printf("[POC] client pull done, server resources can be released\n");
             }
         }
 
