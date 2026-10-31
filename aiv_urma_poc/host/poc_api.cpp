@@ -45,6 +45,16 @@ int PocDynApi::Load(const std::string &ascendHome)
     // OPTIONAL：部分 CANN 版本未导出（MemFabric 同为 OPTIONAL），缺失时调用方 fallback 用 logicId
     POC_DLSYM_OPT(aclrtGetPhyDevIdByLogicDevId, aclHandle, "aclrtGetPhyDevIdByLogicDevId");
 
+    // 方案 B：fatbin 显式加载与 AIV 下发（对齐官方 AddKernelInvocationAcl 样例的
+    // aclrtCreateBinary/aclrtBinaryLoad/aclrtBinaryGetFunction 调用序）
+    POC_DLSYM(aclrtCreateBinary, aclHandle, "aclrtCreateBinary");
+    POC_DLSYM(aclrtDestroyBinary, aclHandle, "aclrtDestroyBinary");
+    POC_DLSYM(aclrtBinaryLoad, aclHandle, "aclrtBinaryLoad");
+    POC_DLSYM(aclrtBinaryUnLoad, aclHandle, "aclrtBinaryUnLoad");
+    POC_DLSYM(aclrtBinaryGetFunction, aclHandle, "aclrtBinaryGetFunction");
+    POC_DLSYM(aclrtLaunchKernelWithHostArgs, aclHandle, "aclrtLaunchKernelWithHostArgs");
+    POC_DLSYM_OPT(aclrtBinaryGetFunctionCount, aclHandle, "aclrtBinaryGetFunctionCount");
+
     void *hcommHandle = nullptr;
     libPath = ascendHome + "/lib64/libhcomm.so";
     if (LoadOneLib(hcommHandle, libPath) != 0) {

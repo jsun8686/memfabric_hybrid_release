@@ -17,19 +17,19 @@
 
 ```
 aiv_urma_poc/
-├── CMakeLists.txt            # ASC 一体化工程（find_package(ASC) + LANGUAGES ASC CXX）
+├── CMakeLists.txt            # 方案 B 工程：ascendc_fatbin_library（kernel）+ 纯 CXX 可执行（host）
 ├── common/poc_common.h       # host/kernel 共用参数布局
 ├── include/hcomm/            # hcomm_res.h / hcomm_res_defs.h（拷贝自 hcomm 仓，securec 换 shim）
 ├── kernel/
 │   ├── poc_kernel_common.h   # 内核公共实现（传输循环/状态写回）
-│   ├── poc_hcomm_write.cpp   # AIV 写内核 + LaunchPocWrite（<<<>>> 启动封装），ASC 编译单元
-│   └── poc_hcomm_read.cpp    # AIV 读内核 + LaunchPocRead，ASC 编译单元
+│   ├── poc_hcomm_write.cpp   # AIV 写内核（fatbin 设备侧编译单元，符号原名 poc_hcomm_write）
+│   └── poc_hcomm_read.cpp    # AIV 读内核（符号原名 poc_hcomm_read）
 ├── host/
-│   ├── poc_main.cpp          # 主流程（server/client 双角色）
-│   ├── poc_api.h/.cpp        # dlopen libascendcl/libhcomm（控制面符号）
+│   ├── poc_main.cpp          # 主流程（server/client 双角色；client 显式加载 fatbin 并 AIV 下发）
+│   ├── poc_api.h/.cpp        # dlopen libascendcl/libhcomm（控制面 + 二进制加载/启动符号）
 │   ├── poc_eid.h/.cpp        # EID 获取（--eid 或 /etc/hccl_rootinfo.json）
 │   └── poc_tcp.h/.cpp        # 极简 TCP 带外通道
-├── build.sh                  # 一键构建（单次 cmake）
+├── build.sh                  # 一键构建（cmake 全量 + install 落盘 fatbin）
 ├── run_server.sh / run_client.sh
 └── README.md
 ```
@@ -37,7 +37,7 @@ aiv_urma_poc/
 ## 前置条件
 
 1. 两台 A5 服务器（UB 互联，UB_CTP 可达），相同 CANN（>= 9.1.0，含 `libhcomm.so`，且
-   `tools/tikcpp/ascendc_kernel_cmake/asc_modules/` 存在——ASC cmake 模块）。
+   `tools/tikcpp/ascendc_kernel_cmake/ascendc.cmake` 存在——fatbin 编译模块）。
 2. 两台机器 `/etc/hccl_rootinfo.json` 存在且含本机 `device_id` 与 `addr_type:"EID"` 条目；
    若缺失，用 `--eid <32hex>` 手工指定本端 EID（两台各查各的）。
 3. asc-devkit 仓（提供 `AscendC::Hcomm` 头）：
@@ -54,7 +54,15 @@ aiv_urma_poc/
 source /usr/local/Ascend/cann/set_env.sh   # ASCEND_HOME_PATH 生效
 cd aiv_urma_poc
 ./build.sh
-# 产物：build/poc/poc_aiv_urma（单可执行，设备镜像内嵌）
+# 产物：build/poc/poc_aiv_urma（host 可执行）+ build/poc/poc_hcomm_kernel.o（fatbin 算子二进制）
+# fatbin 目标架构由 ASCEND_COMPUTE_UNIT 决定（build.sh 默认 dav-3510，可用 POC_ASC_COMPUTE_UNIT 覆盖）
+```
+
+构建后建议先验收 fatbin 符号（方案 B 的关键不变量：符号保持原始名，无 `_0/_1` 后缀）：
+
+```bash
+readelf -sW build/poc/poc_hcomm_kernel.o | grep poc_hcomm
+# 期望：FUNC GLOBAL DEFAULT poc_hcomm_write / poc_hcomm_read
 ```
 
 ## 运行
@@ -91,12 +99,17 @@ read 路径（client AIV 内核从 server 拉）：
   `HcommMemImport` → `HcommChannelCreate(COMM_ENGINE_AIV)` → `HcommChannelGetStatus` 轮询至
   `HCOMM_CHANNEL_STATUS_READY(0)`。`channelDesc` 必填 `role/port/channelName`（AIV 通道内部有 OOB
   socket 辅助建链，server 监听 `port`，client 连接），`exchangeAllMems=true`（两端各注册 1 块内存）。
-- **AIV 数据面（ASC 一体化启动链）**：内核源文件以 ASC 语言编译（bisheng 一次编译完成
-  host/device 分裂），host 经 `LaunchPocWrite/Read` 调用 `<<<1, 0, stream>>>(args)` 启动——
-  设备镜像内嵌、类型标识与按 entry 注册均由编译器/运行时闭环处理（对齐官方 asc-comm 示例
-  04_simt_urma / 01_hcomm_write_read_nbi）。早期"tikcpp ascendc_library + 裸 .o +
-  aclrtBinaryLoad*/GetFunction"路径已废弃：该组合下按名查函数表不完整，必现
-  `aclrtBinaryGetFunction` 107000。
+- **AIV 数据面（方案 B：fatbin 显式加载，CANN 官方"非混合编程"路径）**：内核经
+  `ascendc_fatbin_library`（bisheng）编译为独立算子二进制 `poc_hcomm_kernel.o`；
+  client 侧运行时 `aclrtCreateBinary` → `aclrtBinaryLoad` → `aclrtBinaryGetFunction`
+  （**按原始名** `poc_hcomm_write`/`poc_hcomm_read` 查询）→ `aclrtLaunchKernelWithHostArgs`，
+  launch attr 携带 `ACL_RT_ENGINE_TYPE_AIV`（对齐官方 HCCL AIV 样例与 AddKernelInvocationAcl
+  样例）。fatbin 路径保留原始符号名——这正是它与旧路径的本质区别：旧路径把
+  `ascendc_library` 的中间产物 `_merge_obj_dir/device_aiv.o` 当正式二进制加载，而
+  ascendc_library 的 auto-gen 包装会把符号改写成 `poc_hcomm_write_0`/`poc_hcomm_read_1`
+  （已用 readelf 实证），host 按原名查询必现 `aclrtBinaryGetFunction` 107000。
+  更早的"裸 .o + 手写 `.ascend.meta` + MAGIC 选项"组合同样废弃：meta 段只给同名符号
+  附加类型信息，符号名不匹配时无法完成注册。
 - **内核实现**：`Hcomm<UBC_CTP>` 需要 512B UB workspace（`TBuf<VECOUT>` 分配，32B 对齐天然满足）；
   分块 `WriteNbi/ReadNbi<commit=false>` → `Commit` → `Drain`；内核用 `__vector__ __global__
   __aicore__` 修饰（ASC 路径自动生成类型标识，勿手写 `.ascend.meta` 段）。
@@ -107,8 +120,10 @@ read 路径（client AIV 内核从 server 拉）：
 | 现象 | 处理 |
 |------|------|
 | `dlopen libhcomm.so failed` | 确认 CANN 安装含 hcomm 组件，或设 `LD_LIBRARY_PATH` 后重试；PoC 依次尝试 `<CANN>/lib64` 与 `<CANN>/runtime/lib64/hcomm` |
-| `find_package(ASC)` 失败 | 确认 `$ASCEND_HOME_PATH/tools/tikcpp/ascendc_kernel_cmake/asc_modules/FindASC.cmake` 存在；确认 `set_env.sh` 已 source |
-| 链接期 undefined `LaunchAscendKernel` 等 | `<<<>>>` 胶水符号在运行时库；按报错补链（`ascendc_runtime`/`acl_rt`/`runtime`） |
+| `ascendc.cmake not found` | 确认 `$ASCEND_HOME_PATH/tools/tikcpp/ascendc_kernel_cmake/ascendc.cmake` 存在；确认 `set_env.sh` 已 source |
+| fatbin 编译报 unknown arch | `ASCEND_COMPUTE_UNIT` 与芯片不匹配：查 ascendc.cmake 支持的取值，用 `POC_ASC_COMPUTE_UNIT=<值> ./build.sh` 覆盖（A5 默认 dav-3510） |
+| `fatbin output not found` | `cmake --install` 未落盘：检查 `build/poc/fatbin/` 目录；或手工 `find build/poc -name 'poc_hcomm_kernel.o'` 后用 `--kernel-image` 指定 |
+| `aclrtBinaryGetFunction(xxx) ret=107000` | fatbin 中没有该名字的 GLOBAL FUNC 符号：`readelf -sW build/poc/poc_hcomm_kernel.o \| grep poc_hcomm`，若符号带 `_0/_1` 后缀说明误用了 ascendc_library 的中间产物而非本方案的 fatbin |
 | `HcommEndpointCreate ret!=0` | EID/协议与组网不符：核对 rootinfo 中 EID 归属、两机是否 UB_CTP 互联（PoC 不覆盖 UB_RTP/超节点 PC16 组网） |
 | `channel not ready` | 看 hcomm 日志（`ASCEND_GLOBAL_LOG_LEVEL=0` 前置运行）；核对两端 `--hcomm-port` 一致、server 侧端口可达；`channelName` 两端一致 |
 | `kernel status=0x1xxx` | 低 12 位为内核内错误码段：0x1xx=Init 失败、0x2xx=WriteNbi/ReadNbi 失败（含偏移信息）、0x3xx=Commit 失败、0x4xx=Drain 失败/超时 |
@@ -122,6 +137,8 @@ batch transfer 内核（复用 `HybmBatchTransferParam` ABI，多核按 coreId �
 内核内 `Drain` + host stream sync。GVM 窗口内存（DVA）在 AIV 通道上的注册/导入验证也移至
 阶段 1（需结合 MemFabric 内存池，PoC 用 `aclrtMalloc` HBM 已验证链路层）。
 
-注意：MemFabric 正式集成时若维持 dlopen/dlsym 架构（不编译期链接 CANN 符号），需评估
-`ascendc_fatbin_library`（纯设备 .o）+ dlsym 复刻 ASC 运行时（`RegisterAscendBinary`/
-`LaunchAscendKernel`）的路径，见调研记录。
+注意：MemFabric 正式集成维持 dlopen/dlsym 架构（不编译期链接 CANN 符号）已无阻碍——
+本 PoC 的 fatbin 显式加载路径（`aclrtCreateBinary`/`aclrtBinaryLoad`/`aclrtBinaryGetFunction`/
+`aclrtLaunchKernelWithHostArgs`）全部经 dlsym 获取，launch attr 结构体布局复刻自 CANN
+开源 `acl_rt.h`，可直接平移到 `load_kernel.cpp` 体系。ASC 一体化（`<<<>>>` 内嵌镜像）
+版本保留在 release/1.2 主干作为已验证基线，本方案在其之上只替换构建与启动链。

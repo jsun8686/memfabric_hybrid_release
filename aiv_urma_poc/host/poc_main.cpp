@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -29,11 +30,9 @@
 #include "poc_eid.h"
 #include "poc_tcp.h"
 
-// ASC 编译单元（kernel/poc_hcomm_write.cpp、poc_hcomm_read.cpp）生成的 launch 封装：
-// 内部 <<<>>> 由 bisheng 展开，设备镜像内嵌 + 自动注册 + 按 entry 启动，
-// host 侧不再手工 aclrtBinaryLoad*/GetFunction/KernelArgs
-extern void LaunchPocWrite(void *stream, PocKernelArgs args);
-extern void LaunchPocRead(void *stream, PocKernelArgs args);
+// 方案 B：kernel 由 ascendc_fatbin_library 编成独立算子二进制（fatbin .o），host 显式
+// aclrtCreateBinary -> aclrtBinaryLoad -> aclrtBinaryGetFunction(原名) ->
+// aclrtLaunchKernelWithHostArgs(ACL_RT_ENGINE_TYPE_AIV)，不再使用 <<<>>> 内嵌启动链。
 
 namespace {
 
@@ -55,6 +54,7 @@ struct PocOptions {
     std::string rootinfo = "/etc/hccl_rootinfo.json";
     std::string verify = "write";           // write | read
     uint32_t statusTimeoutSec = 120;
+    std::string kernelImage;                // fatbin 路径，默认 <exe 同目录>/poc_hcomm_kernel.o
 };
 
 void Usage(const char *bin)
@@ -69,7 +69,8 @@ void Usage(const char *bin)
            "  --eid 32HEX         override local EID (skip rootinfo)\n"
            "  --rootinfo PATH     rootinfo path (default /etc/hccl_rootinfo.json)\n"
            "  --verify write|read write: client->server write path; read: client pull from server\n"
-           "  --status-timeout S  channel ready wait timeout seconds (default %u)\n",
+           "  --status-timeout S  channel ready wait timeout seconds (default %u)\n"
+           "  --kernel-image PATH fatbin kernel image (default <exe_dir>/poc_hcomm_kernel.o)\n",
            bin, POC_DEFAULT_OOB_PORT, (unsigned long long)POC_DEFAULT_BUF_SIZE,
            (unsigned long long)POC_DEFAULT_CHUNK, POC_DEFAULT_HCOMM_PORT, 120U);
 }
@@ -107,6 +108,8 @@ int ParseArgs(int argc, char **argv, PocOptions &opt)
             opt.verify = next("--verify");
         } else if (k == "--status-timeout") {
             opt.statusTimeoutSec = static_cast<uint32_t>(atoi(next("--status-timeout")));
+        } else if (k == "--kernel-image") {
+            opt.kernelImage = next("--kernel-image");
         } else if (k == "--help" || k == "-h") {
             Usage(argv[0]);
             exit(0);
@@ -227,6 +230,84 @@ int NotifyReadResult(int fd, bool success)
     return 0;
 }
 
+// fatbin 默认路径：<可执行文件同目录>/poc_hcomm_kernel.o（build.sh 已拷贝到位）
+std::string DefaultKernelImagePath()
+{
+    char exePath[4096] = {0};
+    const ssize_t n = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+    if (n <= 0) {
+        return "poc_hcomm_kernel.o";
+    }
+    exePath[n] = '\0';
+    std::string dir(exePath);
+    const auto pos = dir.find_last_of('/');
+    if (pos != std::string::npos) {
+        dir.resize(pos);
+    }
+    return dir + "/poc_hcomm_kernel.o";
+}
+
+// 方案 B 显式加载：aclrtCreateBinary -> aclrtBinaryLoad -> aclrtBinaryGetFunction(原名)。
+// binBuf 以出参带回并随 main 作用域存活，避免运行时在 load 之后再次访问二进制数据时悬空。
+int LoadPocKernel(PocDynApi &api, const std::string &imagePath, const char *funcName,
+                  std::vector<char> &binBuf, void *&binHandle, void *&func)
+{
+    std::ifstream file(imagePath, std::ios::binary | std::ios::ate);
+    if (!file.good()) {
+        printf("[POC][ERROR] open kernel image failed: %s\n", imagePath.c_str());
+        return -1;
+    }
+    const auto size = file.tellg();
+    file.seekg(0, std::ios::beg);
+    binBuf.resize(static_cast<size_t>(size));
+    if (!file.read(binBuf.data(), size)) {
+        printf("[POC][ERROR] read kernel image failed: %s\n", imagePath.c_str());
+        return -1;
+    }
+    printf("[POC] kernel image: %s (%zu bytes)\n", imagePath.c_str(), binBuf.size());
+
+    void *binDesc = api.aclrtCreateBinary(binBuf.data(), binBuf.size());
+    if (binDesc == nullptr) {
+        printf("[POC][ERROR] aclrtCreateBinary failed\n");
+        return -1;
+    }
+    int32_t ret = api.aclrtBinaryLoad(binDesc, &binHandle);
+    (void)api.aclrtDestroyBinary(binDesc);
+    if (ret != 0 || binHandle == nullptr) {
+        printf("[POC][ERROR] aclrtBinaryLoad ret=%d binHandle=%p\n", ret, binHandle);
+        return -1;
+    }
+    // 诊断：打印 fatbin 中注册的 Function 数量（符号缺失的旧版本 runtime 上自动跳过）
+    if (api.aclrtBinaryGetFunctionCount != nullptr) {
+        uint32_t fnCount = 0;
+        if (api.aclrtBinaryGetFunctionCount(binHandle, &fnCount) == 0) {
+            printf("[POC] kernel image functions: %u\n", fnCount);
+        }
+    }
+    ret = api.aclrtBinaryGetFunction(binHandle, funcName, &func);
+    if (ret != 0 || func == nullptr) {
+        // 若再次见到 107000：先用 readelf -sW 确认 fatbin 中是否存在同名的 GLOBAL FUNC 符号
+        printf("[POC][ERROR] aclrtBinaryGetFunction(%s) ret=%d\n", funcName, ret);
+        return -1;
+    }
+    printf("[POC] kernel function ready: %s\n", funcName);
+    return 0;
+}
+
+// AIV 引擎下发：attr 取值复刻 CANN 开源 acl_rt.h（SCHEM_MODE=1 / ENGINE_TYPE=3 / AIV=1），
+// 对齐官方 HCCL AIV 样例 launch_kernel.cc（schemMode=1 + engineType=AIV）；
+// 如需执行超时保护，可再追加 ACL_RT_LAUNCH_KERNEL_ATTR_TIMEOUT_US（=8）属性
+int LaunchPocKernel(PocDynApi &api, void *func, void *stream, PocKernelArgs &args)
+{
+    PocLaunchKernelAttr attrs[2] {};
+    attrs[0].id = POC_LAUNCH_ATTR_SCHEM_MODE;
+    attrs[0].value.schemMode = 1;
+    attrs[1].id = POC_LAUNCH_ATTR_ENGINE_TYPE;
+    attrs[1].value.engineType = POC_ENGINE_TYPE_AIV;
+    PocLaunchKernelCfg cfg {attrs, 2};
+    return api.aclrtLaunchKernelWithHostArgs(func, 1, stream, &cfg, &args, sizeof(args), nullptr, 0);
+}
+
 }  // namespace
 
 int main(int argc, char **argv)
@@ -253,6 +334,8 @@ int main(int argc, char **argv)
     bool aclInited = false;
     bool deviceSet = false;
     void *stream = nullptr;
+    void *binHandle = nullptr;        // fatbin 句柄（仅 client 侧加载）
+    std::vector<char> kernelBin;      // fatbin 文件内容，随 main 作用域存活
     void *devBuf = nullptr;
     void *statusBuf = nullptr;
     EndpointHandle endpoint = nullptr;
@@ -487,7 +570,18 @@ int main(int argc, char **argv)
                 }
             }
 
-            // 内核镜像已由 ASC 编译器内嵌（<<<>>> 启动链自动注册），host 无需手工加载
+            // 方案 B：channel READY 后加载 fatbin 并取 Function（仅 client 需要启动内核）
+            const std::string kernelImage =
+                opt.kernelImage.empty() ? DefaultKernelImagePath() : opt.kernelImage;
+            const char *funcName = (opt.verify == "write") ? "poc_hcomm_write" : "poc_hcomm_read";
+            void *func = nullptr;
+            if (LoadPocKernel(api, kernelImage, funcName, kernelBin, binHandle, func) != 0) {
+                if (opt.verify == "read") {
+                    (void)NotifyReadResult(oobFd, false);
+                }
+                break;
+            }
+
             PocKernelArgs args {};
             args.channel = channel;
             args.localAddr = reinterpret_cast<uint64_t>(devBuf);
@@ -497,14 +591,9 @@ int main(int argc, char **argv)
             args.statusAddr = reinterpret_cast<uint64_t>(statusBuf);
 
             const uint64_t t0 = PocNowUs();
-            if (opt.verify == "write") {
-                LaunchPocWrite(stream, args);
-            } else {
-                LaunchPocRead(stream, args);
-            }
-            ret = api.aclrtSynchronizeStream(stream);
+            ret = LaunchPocKernel(api, func, stream, args);
             if (ret != 0) {
-                printf("[POC][ERROR] launch kernel ret=%d\n", ret);
+                printf("[POC][ERROR] aclrtLaunchKernelWithHostArgs(%s) ret=%d\n", funcName, ret);
                 if (opt.verify == "read") {
                     (void)NotifyReadResult(oobFd, false);
                 }
@@ -614,6 +703,9 @@ int main(int argc, char **argv)
     }
     if (endpoint != nullptr) {
         (void)api.HcommEndpointDestroy(endpoint);
+    }
+    if (binHandle != nullptr) {
+        (void)api.aclrtBinaryUnLoad(binHandle);
     }
     if (stream != nullptr) {
         (void)api.aclrtDestroyStream(stream);
