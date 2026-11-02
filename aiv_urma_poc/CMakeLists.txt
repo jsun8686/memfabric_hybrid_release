@@ -44,6 +44,18 @@ if(NOT DEFINED SOC_VERSION)
 endif()
 message(STATUS "poc: SOC_VERSION = ${SOC_VERSION}")
 
+# host_config.cmake 以 CMake 变量方式引用 ASCEND_CANN_PACKAGE_PATH（不读环境变量），
+# 官方样例惯例是 cmake -DASCEND_CANN_PACKAGE_PATH=<CANN 包根> 传入；
+# 这里允许从环境变量兜底，再退化为 ASCEND_HOME_PATH。
+if(NOT DEFINED ASCEND_CANN_PACKAGE_PATH)
+    if(DEFINED ENV{ASCEND_CANN_PACKAGE_PATH})
+        set(ASCEND_CANN_PACKAGE_PATH "$ENV{ASCEND_CANN_PACKAGE_PATH}")
+    else()
+        set(ASCEND_CANN_PACKAGE_PATH "$ENV{ASCEND_HOME_PATH}")
+    endif()
+endif()
+message(STATUS "poc: ASCEND_CANN_PACKAGE_PATH = ${ASCEND_CANN_PACKAGE_PATH}")
+
 # ascendc_fatbin_library 来自 CANN 自带 ascendc_kernel_cmake（纯设备侧编译，无需 ASC 语言工具链）
 set(ASCENDC_CMAKE "$ENV{ASCEND_HOME_PATH}/tools/tikcpp/ascendc_kernel_cmake/ascendc.cmake")
 if(NOT EXISTS ${ASCENDC_CMAKE})

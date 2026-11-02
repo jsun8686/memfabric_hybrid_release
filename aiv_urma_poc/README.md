@@ -124,7 +124,7 @@ read 路径（client AIV 内核从 server 拉）：
 | `ascendc.cmake not found` | 确认 `$ASCEND_HOME_PATH/tools/tikcpp/ascendc_kernel_cmake/ascendc.cmake` 存在；确认 `set_env.sh` 已 source |
 | `SOC_VERSION value not set.` | legacy ascendc_kernel_cmake 只认 CMake 变量 `SOC_VERSION`（不认 `ASCEND_COMPUTE_UNIT`）：build.sh 已默认传 `ascend950pr_9599`；若手工 cmake 需加 `-DSOC_VERSION=<值>` |
 | `SOC_VERSION ... does not support` | 取值与 host_config.cmake 的 `ascend950_list` 不符：`grep -n ascend950_list $ASCEND_HOME_PATH/tools/tikcpp/ascendc_kernel_cmake/legacy_modules/host_config.cmake`，或 `ls $ASCEND_HOME_PATH/compiler/data/platform_config/ \| grep -i 950` 对照本机已装平台配置，再用 `POC_SOC_VERSION=<值> ./build.sh` 覆盖（950DT 机器必须改） |
-| `ASCEND_CANN_PACKAGE_PATH ... does not exist` | 未 source `set_env.sh` 或安装布局特殊：`export ASCEND_CANN_PACKAGE_PATH=$ASCEND_HOME_PATH` 后重试 |
+| `... does not exist, please check the setting of ASCEND_CANN_PACKAGE_PATH` | host_config.cmake 以 **CMake 变量**方式引用它（光 export 环境变量无效）：build.sh 已默认 `-DASCEND_CANN_PACKAGE_PATH=$ASCEND_HOME_PATH`；若手工 cmake 需自行加该 `-D`，且路径必须真实存在 |
 | `fatbin output not found` | `cmake --install` 未落盘：检查 `build/poc/fatbin/` 目录；或手工 `find build/poc -name 'poc_hcomm_kernel.o'` 后用 `--kernel-image` 指定 |
 | `aclrtBinaryGetFunction(xxx) ret=107000` | fatbin 中没有该名字的 GLOBAL FUNC 符号：`readelf -sW build/poc/poc_hcomm_kernel.o \| grep poc_hcomm`，若符号带 `_0/_1` 后缀说明误用了 ascendc_library 的中间产物而非本方案的 fatbin |
 | `HcommEndpointCreate ret!=0` | EID/协议与组网不符：核对 rootinfo 中 EID 归属、两机是否 UB_CTP 互联（PoC 不覆盖 UB_RTP/超节点 PC16 组网） |

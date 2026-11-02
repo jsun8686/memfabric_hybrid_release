@@ -23,7 +23,8 @@ echo "[POC] ASCEND_HOME_PATH = ${ASCEND_HOME_PATH}"
 SOC_VERSION="${POC_SOC_VERSION:-ascend950pr_9599}"
 echo "[POC] SOC_VERSION = ${SOC_VERSION}"
 
-# host_config.cmake 还要求 ASCEND_CANN_PACKAGE_PATH 指向已安装的 CANN 包根目录
+# host_config.cmake 要求 ASCEND_CANN_PACKAGE_PATH 指向已安装的 CANN 包根目录；
+# 注意它以 CMake 变量（而非环境变量）方式被引用，所以下面 cmake 要显式 -D 传入
 export ASCEND_CANN_PACKAGE_PATH="${ASCEND_CANN_PACKAGE_PATH:-${ASCEND_HOME_PATH}}"
 
 # 全量清建：PoC 体量小，且 fatbin 增量行为未验证
@@ -31,6 +32,7 @@ rm -rf "${BUILD_DIR}"
 
 cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" \
     -DSOC_VERSION="${SOC_VERSION}" \
+    -DASCEND_CANN_PACKAGE_PATH="${ASCEND_CANN_PACKAGE_PATH}" \
     -DASC_DEVKIT_ROOT="${ASC_DEVKIT_ROOT:-$HOME/asc-devkit}" \
     -DCMAKE_BUILD_TYPE=RELEASE \
     -DCMAKE_INSTALL_PREFIX="${BUILD_DIR}"
