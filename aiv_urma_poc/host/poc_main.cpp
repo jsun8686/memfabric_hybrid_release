@@ -73,6 +73,7 @@ void Usage(const char *bin)
            "  --status-timeout S  channel ready wait timeout seconds (default %u)\n"
            "  --kernel-image PATH fatbin kernel image (default <exe_dir>/poc_hcomm_kernel.o)\n"
            "  --self-test         自检模式：加载 fatbin 并启动 poc_selftest 内核（不建链、不碰 Hcomm），\n"
+           "                      自动跑 {file-lazy, mem-eager} x {attrs-on, attrs-off} 四格矩阵\n"
            "                    用于切分「下发链路坏」与「hcomm 内核符号未解析」两类故障\n",
            bin, POC_DEFAULT_OOB_PORT, (unsigned long long)POC_DEFAULT_BUF_SIZE,
            (unsigned long long)POC_DEFAULT_CHUNK, POC_DEFAULT_HCOMM_PORT, 120U);
@@ -255,7 +256,7 @@ std::string DefaultKernelImagePath()
 // 方案 B 显式加载：aclrtCreateBinary -> aclrtBinaryLoad -> aclrtBinaryGetFunction(原名)。
 // binBuf 以出参带回并随 main 作用域存活，避免运行时在 load 之后再次访问二进制数据时悬空。
 int LoadPocKernel(PocDynApi &api, const std::string &imagePath, const char *funcName,
-                  std::vector<char> &binBuf, void *&binHandle, void *&func)
+                  std::vector<char> &binBuf, void *&binHandle, void *&func, bool tryFileLoad = true)
 {
     std::ifstream file(imagePath, std::ios::binary | std::ios::ate);
     if (!file.good()) {
@@ -274,7 +275,7 @@ int LoadPocKernel(PocDynApi &api, const std::string &imagePath, const char *func
     // 优先对齐 HCCL 950 AIV 生产路径（hccl_aiv_utils.cc）：aclrtBinaryLoadFromFile + LAZY_LOAD；
     // 符号缺失或加载失败时回退 CreateBinary + BinaryLoad 内存路径
     int32_t ret = -1;
-    if (api.aclrtBinaryLoadFromFile != nullptr) {
+    if (tryFileLoad && api.aclrtBinaryLoadFromFile != nullptr) {
         PocBinaryLoadOption loadOpt {};
         loadOpt.type = POC_BINARY_LOAD_OPT_LAZY_LOAD;
         loadOpt.value.isLazyLoad = 1;
@@ -495,42 +496,80 @@ int main(int argc, char **argv)
             }
             const std::string kernelImage =
                 opt.kernelImage.empty() ? DefaultKernelImagePath() : opt.kernelImage;
-            void *func = nullptr;
-            if (LoadPocKernel(api, kernelImage, "poc_selftest", kernelBin, binHandle, func) != 0) {
-                break;
-            }
             constexpr uint64_t POC_SELFTEST_MAGIC = 0x5154A5155154A515ULL;
-            uint64_t selfArgs[2] = {reinterpret_cast<uint64_t>(statusBuf), POC_SELFTEST_MAGIC};
-            printf("[POC] self-test launch args: status=%#llx magic=%#llx\n",
-                   (unsigned long long)selfArgs[0], (unsigned long long)selfArgs[1]);
-            const uint64_t t0 = PocNowUs();
-            ret = LaunchPocKernel(api, func, stream, selfArgs, sizeof(selfArgs));
-            if (ret != 0) {
-                printf("[POC][ERROR] self-test aclrtLaunchKernelWithHostArgs ret=%d\n", ret);
-                break;
+            constexpr uint32_t POC_KERNEL_TIMEOUT_US = 60U * 1000U * 1000U;  // 60s
+            // 自检 FAIL（da23681 实测：load=file-lazy + 3attrs 不执行）后的二分矩阵：
+            //   {file LAZY_LOAD, mem CreateBinary+BinaryLoad} x {3 attrs, no attrs}
+            // 任一格 PASS => 该组合即为可用下发方式，替换主路径对应环节；
+            // 全 FAIL => fatbin 结构本身坏，转 readelf 对比 hccl_aiv_op_910_95.o + slog 日志
+            int passMask = 0;
+            for (int useFileLoad = 1; useFileLoad >= 0; --useFileLoad) {
+                for (int useAttrs = 1; useAttrs >= 0; --useAttrs) {
+                    const int cell = (useFileLoad << 1) | useAttrs;
+                    const char *loadTag = useFileLoad ? "file-lazy" : "mem-eager";
+                    const char *attrTag = useAttrs ? "attrs-on" : "attrs-off";
+                    (void)api.aclrtMemset(statusBuf, 64, 0, 64);
+                    void *oneBinHandle = nullptr;
+                    void *fn = nullptr;
+                    std::vector<char> oneBin;
+                    if (LoadPocKernel(api, kernelImage, "poc_selftest", oneBin, oneBinHandle, fn,
+                                      useFileLoad != 0) != 0) {
+                        printf("[POC] self-test[%s %s]: LOAD FAIL\n", loadTag, attrTag);
+                        continue;
+                    }
+                    uint64_t selfArgs[2] = {reinterpret_cast<uint64_t>(statusBuf), POC_SELFTEST_MAGIC};
+                    PocLaunchKernelAttr attrs[3] {};
+                    attrs[0].id = POC_LAUNCH_ATTR_SCHEM_MODE;
+                    attrs[0].value.schemMode = 1;
+                    attrs[1].id = POC_LAUNCH_ATTR_TIMEOUT_US;
+                    attrs[1].value.timeoutUs.timeoutLow = POC_KERNEL_TIMEOUT_US;
+                    attrs[1].value.timeoutUs.timeoutHigh = 0;
+                    attrs[2].id = POC_LAUNCH_ATTR_ENGINE_TYPE;
+                    attrs[2].value.engineType = POC_ENGINE_TYPE_AIV;
+                    PocLaunchKernelCfg cfg {attrs, 3};
+                    const uint64_t t0 = PocNowUs();
+                    ret = api.aclrtLaunchKernelWithHostArgs(fn, 1, stream, useAttrs ? &cfg : nullptr,
+                                                            selfArgs, sizeof(selfArgs), nullptr, 0);
+                    if (ret != 0) {
+                        printf("[POC] self-test[%s %s]: launch ret=%d\n", loadTag, attrTag, ret);
+                        (void)api.aclrtBinaryUnLoad(oneBinHandle);
+                        continue;
+                    }
+                    ret = api.aclrtSynchronizeStream(stream);
+                    const uint64_t t1 = PocNowUs();
+                    if (ret != 0) {
+                        printf("[POC] self-test[%s %s]: sync ret=%d\n", loadTag, attrTag, ret);
+                        (void)api.aclrtBinaryUnLoad(oneBinHandle);
+                        continue;
+                    }
+                    uint64_t selfDump[8] = {0};
+                    ret = api.aclrtMemcpy(selfDump, sizeof(selfDump), statusBuf, sizeof(selfDump), 2 /*D2H*/);
+                    if (ret != 0) {
+                        printf("[POC] self-test[%s %s]: readback ret=%d\n", loadTag, attrTag, ret);
+                        (void)api.aclrtBinaryUnLoad(oneBinHandle);
+                        continue;
+                    }
+                    const bool pass = (selfDump[0] == POC_SELFTEST_MAGIC);
+                    printf("[POC] self-test[%s %s]: %s (%llu us, status[0]=%#llx)\n", loadTag, attrTag,
+                           pass ? "PASS" : "FAIL", (unsigned long long)(t1 - t0),
+                           (unsigned long long)selfDump[0]);
+                    if (pass) {
+                        passMask |= (1 << cell);
+                    }
+                    (void)api.aclrtBinaryUnLoad(oneBinHandle);
+                }
             }
-            ret = api.aclrtSynchronizeStream(stream);
-            const uint64_t t1 = PocNowUs();
-            if (ret != 0) {
-                printf("[POC][ERROR] self-test SynchronizeStream ret=%d\n", ret);
-                break;
-            }
-            uint64_t selfDump[8] = {0};
-            ret = api.aclrtMemcpy(selfDump, sizeof(selfDump), statusBuf, sizeof(selfDump), 2 /*D2H*/);
-            if (ret != 0) {
-                printf("[POC][ERROR] self-test read status ret=%d\n", ret);
-                break;
-            }
-            printf("[POC] self-test kernel done in %llu us, status[0]=%#llx\n",
-                   (unsigned long long)(t1 - t0), (unsigned long long)selfDump[0]);
-            if (selfDump[0] == POC_SELFTEST_MAGIC) {
-                printf("[POC] SELF-TEST PASS: fatbin 加载 + AIV 下发 + GM 写回链路完好；\n"
-                       "[POC] hcomm 内核不执行请查设备侧符号（build.sh 的 UNDEF 检查输出）\n");
+            if (passMask != 0) {
+                printf("[POC] SELF-TEST PASS mask=%#x（bit3=file-lazy+attrs, bit2=file-lazy, "
+                       "bit1=mem-eager+attrs, bit0=mem-eager）：\n"
+                       "[POC] fatbin 加载 + AIV 下发 + GM 写回链路存在可用组合，按 PASS 格修正主路径；\n"
+                       "[POC] hcomm 内核若仍不执行再查设备侧符号（build.sh 的 UNDEF 检查输出）\n", passMask);
                 exitCode = 0;
             } else {
-                printf("[POC][ERROR] SELF-TEST FAIL: kernel 未执行（status[0]=%#llx），\n"
-                       "[POC] 问题在 fatbin 格式/下发链路本身，与 hcomm 无关\n",
-                       (unsigned long long)selfDump[0]);
+                printf("[POC][ERROR] SELF-TEST FAIL（4/4 组合均未执行 kernel），问题在 fatbin 结构/格式本身，请收集：\n"
+                       "[POC]   1) build.sh 末尾的 fatbin UNDEF 符号输出\n"
+                       "[POC]   2) readelf -h/-S/-sW poc_hcomm_kernel.o 与 hccl_aiv_op_910_95.o 对比\n"
+                       "[POC]   3) ASCEND_GLOBAL_LOG_LEVEL=0 ASCEND_SLOG_PRINT_TO_STDOUT=1 重跑本自检的完整日志\n");
             }
             break;
         }
