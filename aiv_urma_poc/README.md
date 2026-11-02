@@ -112,8 +112,9 @@ read 路径（client AIV 内核从 server 拉）：
   更早的"裸 .o + 手写 `.ascend.meta` + MAGIC 选项"组合同样废弃：meta 段只给同名符号
   附加类型信息，符号名不匹配时无法完成注册。
 - **内核实现**：`Hcomm<UBC_CTP>` 需要 512B UB workspace（`TBuf<VECOUT>` 分配，32B 对齐天然满足）；
-  分块 `WriteNbi/ReadNbi<commit=false>` → `Commit` → `Drain`；内核用 `__vector__ __global__
-  __aicore__` 修饰（ASC 路径自动生成类型标识，勿手写 `.ascend.meta` 段）。
+  分块 `WriteNbi/ReadNbi<commit=false>` → `Commit` → `Drain`；内核声明为 `__vector__
+  __global__`（对齐 asc-devkit 新工具链样例；**不要叠加 `__aicore__`**——c310 动态模式下
+  `__global__ __aicore__` 会触发 "kernel func 需显式核型属性" 编译错误）。
 - **启动后同步**：host `aclrtSynchronizeStream` + 内核写回 statusAddr 双保险。
 
 ## 常见问题排查
@@ -125,6 +126,7 @@ read 路径（client AIV 内核从 server 拉）：
 | `SOC_VERSION value not set.` | legacy ascendc_kernel_cmake 只认 CMake 变量 `SOC_VERSION`（不认 `ASCEND_COMPUTE_UNIT`）：build.sh 已默认传 `ascend950pr_9599`；若手工 cmake 需加 `-DSOC_VERSION=<值>` |
 | `SOC_VERSION ... does not support` | 取值与 host_config.cmake 的 `ascend950_list` 不符：`grep -n ascend950_list $ASCEND_HOME_PATH/tools/tikcpp/ascendc_kernel_cmake/legacy_modules/host_config.cmake`，或 `ls $ASCEND_HOME_PATH/compiler/data/platform_config/ \| grep -i 950` 对照本机已装平台配置，再用 `POC_SOC_VERSION=<值> ./build.sh` 覆盖（950DT 机器必须改） |
 | `... does not exist, please check the setting of ASCEND_CANN_PACKAGE_PATH` | host_config.cmake 以 **CMake 变量**方式引用它（光 export 环境变量无效）：build.sh 已默认 `-DASCEND_CANN_PACKAGE_PATH=$ASCEND_HOME_PATH`；若手工 cmake 需自行加该 `-D`，且路径必须真实存在 |
+| `__attribute__((aic)), __attribute__((aiv)), bisheng::core_ratio attribute needs to appear with kernel func` | kernel 声明叠了 `__aicore__`：c310 动态模式下 kernel 应为 `__vector__ __global__`（AIV）或 `__cube__ __global__`（AIC），`__vector__` 已表达核型，`__global__ __aicore__` 组合反而触发该校验 |
 | `fatbin output not found` | `cmake --install` 未落盘：检查 `build/poc/fatbin/` 目录；或手工 `find build/poc -name 'poc_hcomm_kernel.o'` 后用 `--kernel-image` 指定 |
 | `aclrtBinaryGetFunction(xxx) ret=107000` | fatbin 中没有该名字的 GLOBAL FUNC 符号：`readelf -sW build/poc/poc_hcomm_kernel.o \| grep poc_hcomm`，若符号带 `_0/_1` 后缀说明误用了 ascendc_library 的中间产物而非本方案的 fatbin |
 | `HcommEndpointCreate ret!=0` | EID/协议与组网不符：核对 rootinfo 中 EID 归属、两机是否 UB_CTP 互联（PoC 不覆盖 UB_RTP/超节点 PC16 组网） |

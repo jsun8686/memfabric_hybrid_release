@@ -12,14 +12,17 @@
  * AIV direct-drive URMA PoC write kernel（A5 / dav-3510，fatbin 设备侧编译单元）。
  * 本地 GM -> 对端 GM（AscendC::Hcomm<UBC_CTP>::WriteNbi -> Commit -> Drain）。
  * 单独成文件：每个编译单元一个 kernel 函数。
- * __vector__ 修饰符：标识 vector core（AIV）内核，bisheng 据此在 fatbin 中生成
- * AIV kernel type 元数据；fatbin 路径不做 auto-gen 改名，符号保持原始名
- * poc_hcomm_write，host 侧 aclrtBinaryGetFunction 按原名查询。
+ * 声明为 __vector__ __global__（对齐 asc-devkit 新工具链样例）：__vector__ 标识
+ * vector core（AIV）内核，bisheng 据此在 fatbin 中生成 AIV kernel type 元数据；
+ * 注意不要再叠加 __aicore__——c310 动态模式下 __global__ __aicore__ 会触发
+ * "kernel func 需显式核型属性（__attribute__((aiv)) 等）"的编译校验。
+ * fatbin 路径不做 auto-gen 改名，符号保持原始名 poc_hcomm_write，
+ * host 侧 aclrtBinaryGetFunction 按原名查询。
  */
 
 #include "poc_kernel_common.h"
 
-extern "C" __vector__ __global__ __aicore__ void poc_hcomm_write(PocKernelArgs args)
+extern "C" __vector__ __global__ void poc_hcomm_write(PocKernelArgs args)
 {
     if (GetBlockIdx() != 0) {
         return;
