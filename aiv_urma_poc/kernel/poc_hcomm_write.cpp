@@ -32,20 +32,20 @@ extern "C" __global__ __aicore__ void poc_hcomm_write(uint64_t channel, uint64_t
                                                       uint64_t remoteAddr, uint64_t size,
                                                       uint64_t chunkSize, uint64_t statusAddr)
 {
-    if (GetBlockIdx() != 0) {
-        return;
+    if (GetBlockIdx() == 0) {
+        PocKernelArgs args {};
+        args.channel = channel;
+        args.localAddr = localAddr;
+        args.remoteAddr = remoteAddr;
+        args.size = size;
+        args.chunkSize = chunkSize;
+        args.statusAddr = statusAddr;
+        PocWriteStatus(args.statusAddr, POC_STAGE_ENTERED);  // 诊断：非 0 入口标记
+        PocEchoArgs(&args);                                  // 诊断：回显 kernel 实际收到的参数
+        const int32_t ret = PocTransferImpl(&args, false);
+        PocWriteStatus(args.statusAddr, (ret == 0) ? POC_STATUS_OK : (POC_STATUS_FAIL_BASE + ret));
     }
-    PocKernelArgs args {};
-    args.channel = channel;
-    args.localAddr = localAddr;
-    args.remoteAddr = remoteAddr;
-    args.size = size;
-    args.chunkSize = chunkSize;
-    args.statusAddr = statusAddr;
-    PocWriteStatus(args.statusAddr, POC_STAGE_ENTERED);  // 诊断：非 0 入口标记
-    PocEchoArgs(&args);                                  // 诊断：回显 kernel 实际收到的参数
-    const int32_t ret = PocTransferImpl(&args, false);
-    PocWriteStatus(args.statusAddr, (ret == 0) ? POC_STATUS_OK : (POC_STATUS_FAIL_BASE + ret));
+    PocKernelEpilogue();  // c310 收尾 flush：GM 写对 host 可见的必要条件，所有核无条件执行
 }
 // host 侧启动：poc_main.cpp 显式 aclrtBinaryLoad + aclrtBinaryGetFunction("poc_hcomm_write")
 // + aclrtLaunchKernelWithHostArgs(AIV)，本文件不再提供 <<<>>> 封装（fatbin 为纯设备编译）

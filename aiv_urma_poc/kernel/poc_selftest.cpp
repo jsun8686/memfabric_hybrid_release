@@ -22,10 +22,16 @@
 // 写回 magic 到 statusAddr；参数走与正式内核相同的打包下传约定（值打包 + 工具链尾参）
 extern "C" __global__ __aicore__ void poc_selftest(uint64_t statusAddr, uint64_t magic)
 {
-    if (AscendC::GetBlockIdx() != 0) {
-        return;
-    }
-    if (statusAddr != 0) {
+    if (AscendC::GetBlockIdx() == 0 && statusAddr != 0) {
         *(volatile uint64_t *)statusAddr = magic;
     }
+    // c310 收尾 flush（与 poc_kernel_common.h 的 PocKernelEpilogue 同一序列；此处内联
+    // 展开以保持本文件不依赖 hcomm 头文件）：缺了它 AIV 的 GM 写对 host D2H 不可见。
+    // 依据：auto-gen 对 <<<>>> wrapper 恒追加（extract_host_stub.py，__DAV_C310__ 守卫），
+    // ascc 插件对 ASCEND950 恒追加（asc_dev_stub_generator.cpp）。
+#if defined(__DAV_C310__)
+    pipe_barrier(PIPE_ALL);
+    dsb(mem_dsb_t::DSB_ALL);
+    dci();
+#endif
 }

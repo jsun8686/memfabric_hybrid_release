@@ -35,6 +35,21 @@ static inline __aicore__ void PocWriteStatus(uint64_t statusAddr, uint64_t value
     }
 }
 
+// c310/A5 收尾 flush：kernel 返回前必须显式执行，否则 AIV 的 GM 写滞留在写缓冲/
+// cache 中，对 host 侧 D2H 不可见（表现为"任务正常完成但状态全 0"）。
+// 依据：<<<>>> 混合编程路径由 auto-gen 在每个 kernel wrapper 尾部自动追加同一序列
+// （asc-devkit extract_host_stub.py _generate_barrier_sync()，#if defined(__DAV_C310__)）；
+// ascc 插件（asc_dev_stub_generator.cpp）对 ASCEND950 无条件追加。本工程是 fatbin 纯设备
+// 编译、手写 __aicore__ kernel，不经过任何 stub 生成器，必须自己补上。
+static inline __aicore__ void PocKernelEpilogue()
+{
+#if defined(__DAV_C310__)
+    pipe_barrier(PIPE_ALL);
+    dsb(mem_dsb_t::DSB_ALL);
+    dci();
+#endif
+}
+
 // 诊断：把 kernel 实际收到的参数回显到状态区 [1..4]，host 侧对照打印值可判别
 // "kernel 没跑" 与 "跑了但参数错位/为零" 两类故障
 static inline __aicore__ void PocEchoArgs(const PocKernelArgs *args)
