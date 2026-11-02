@@ -112,11 +112,11 @@ read 路径（client AIV 内核从 server 拉）：
   更早的"裸 .o + 手写 `.ascend.meta` + MAGIC 选项"组合同样废弃：meta 段只给同名符号
   附加类型信息，符号名不匹配时无法完成注册。
 - **内核实现**：`Hcomm<UBC_CTP>` 需要 512B UB workspace（`TBuf<VECOUT>` 分配，32B 对齐天然满足）；
-  分块 `WriteNbi/ReadNbi<commit=false>` → `Commit` → `Drain`；内核声明为
-  `__attribute__((aiv)) __global__ __aicore__`——c310 动态模式下 bisheng 要求 kernel func
-  显式携带核型属性（`__vector__` 关键字不计入）；同时属性必须放在 `__global__` **之前**：
-  `extract_host_stub.py` 的签名正则要求预处理后的 `[aicore]` 紧跟"返回类型 函数名"，
-  属性插在 `__aicore__` 与返回类型之间会导致 host stub 生成抛 `FuncNameNotFound`。
+  分块 `WriteNbi/ReadNbi<commit=false>` → `Commit` → `Drain`；内核声明为朴素的
+  `__global__ __aicore__`（对齐官方 add_custom 样例）。**不要**在声明上携带
+  `__attribute__((aiv))` 核型属性：auto-gen 包装会把 `__global__` 重定义为 `inline`
+  （原函数降级为普通设备函数并改名 `_origin`），真正的 kernel 是工具链生成的 wrapper，
+  属性挂在非 kernel 函数上必报 "needs to appear with kernel func"。
 - **启动后同步**：host `aclrtSynchronizeStream` + 内核写回 statusAddr 双保险。
 
 ## 常见问题排查
@@ -128,8 +128,8 @@ read 路径（client AIV 内核从 server 拉）：
 | `SOC_VERSION value not set.` | legacy ascendc_kernel_cmake 只认 CMake 变量 `SOC_VERSION`（不认 `ASCEND_COMPUTE_UNIT`）：build.sh 已默认传 `ascend950pr_9599`；若手工 cmake 需加 `-DSOC_VERSION=<值>` |
 | `SOC_VERSION ... does not support` | 取值与 host_config.cmake 的 `ascend950_list` 不符：`grep -n ascend950_list $ASCEND_HOME_PATH/tools/tikcpp/ascendc_kernel_cmake/legacy_modules/host_config.cmake`，或 `ls $ASCEND_HOME_PATH/compiler/data/platform_config/ \| grep -i 950` 对照本机已装平台配置，再用 `POC_SOC_VERSION=<值> ./build.sh` 覆盖（950DT 机器必须改） |
 | `... does not exist, please check the setting of ASCEND_CANN_PACKAGE_PATH` | host_config.cmake 以 **CMake 变量**方式引用它（光 export 环境变量无效）：build.sh 已默认 `-DASCEND_CANN_PACKAGE_PATH=$ASCEND_HOME_PATH`；若手工 cmake 需自行加该 `-D`，且路径必须真实存在 |
-| `__attribute__((aic)), __attribute__((aiv)), bisheng::core_ratio attribute needs to appear with kernel func` | kernel 声明缺显式核型属性：c310 动态模式下应为 `__attribute__((aiv)) __global__ __aicore__`（AIV）或 `__attribute__((aic)) ...`（AIC）；`__vector__` 关键字在这版 bisheng 不计入该校验 |
-| `host_stub_util.FuncNameNotFound`（extract_host_stub.py） | 核型属性位置不对：属性放在 `__aicore__` 与返回类型之间会破坏签名解析正则，须放到 `__global__` 之前（见上一条的正确写法） |
+| `__attribute__((aic)), __attribute__((aiv)), bisheng::core_ratio attribute needs to appear with kernel func` | 核型属性挂在了**非 kernel** 函数上：auto-gen 会把 `__global__` 重定义为 `inline`，源码里的原 kernel 已退化为普通设备函数，不能带 `__attribute__((aiv))`/`__vector__`。kernel 声明用朴素的 `__global__ __aicore__` 即可，核型分工由 aic/aiv 子构建承担 |
+| `host_stub_util.FuncNameNotFound`（extract_host_stub.py） | kernel 签名里有解析器不认的元素（如属性插在 `__aicore__` 与返回类型之间）：签名正则要求 `[aicore]` 后紧跟"返回类型 函数名(参数)"，保持朴素的 `__global__ __aicore__ void name(args)` 形式 |
 | `fatbin output not found` | `cmake --install` 未落盘：检查 `build/poc/fatbin/` 目录；或手工 `find build/poc -name 'poc_hcomm_kernel.o'` 后用 `--kernel-image` 指定 |
 | `aclrtBinaryGetFunction(xxx) ret=107000` | fatbin 中没有该名字的 GLOBAL FUNC 符号：`readelf -sW build/poc/poc_hcomm_kernel.o \| grep poc_hcomm`，若符号带 `_0/_1` 后缀说明误用了 ascendc_library 的中间产物而非本方案的 fatbin |
 | `HcommEndpointCreate ret!=0` | EID/协议与组网不符：核对 rootinfo 中 EID 归属、两机是否 UB_CTP 互联（PoC 不覆盖 UB_RTP/超节点 PC16 组网） |

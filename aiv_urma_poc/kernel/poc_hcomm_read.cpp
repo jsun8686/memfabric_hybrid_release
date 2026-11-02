@@ -12,17 +12,19 @@
  * AIV direct-drive URMA PoC read kernel（A5 / dav-3510，fatbin 设备侧编译单元）。
  * 对端 GM -> 本地 GM（AscendC::Hcomm<UBC_CTP>::ReadNbi -> Commit -> Drain）。
  * 单独成文件：每个编译单元一个 kernel 函数。
- * 声明为 __attribute__((aiv)) __global__ __aicore__：c310 动态模式下 bisheng 要求
- * kernel func 显式携带核型属性；同时 extract_host_stub.py 的签名正则要求
- * [aicore] 之后紧跟"返回类型 函数名"，因此核型属性必须放在 __global__ 之前，
- * 不能插在 __aicore__ 与返回类型之间（否则 host stub 生成抛 FuncNameNotFound）。
+ * 声明为朴素的 __global__ __aicore__（对齐官方 add_custom 样例）。注意不要在 kernel
+ * 声明上携带 __attribute__((aiv)) 等核型属性：ascendc_kernel_cmake 的 auto-gen 包装会把
+ * __global__ 重定义为 inline（本函数降级为普通设备函数并被改名 _origin），真正的 kernel
+ * 是工具链生成的 wrapper；属性挂在非 kernel 函数上会报
+ * "__attribute__((aic/aiv)) ... needs to appear with kernel func"。
+ * 核型分工由 aic_device/aiv_device 子构建的编译参数承担，不靠源码属性。
  * fatbin 路径不做 auto-gen 改名，符号保持原始名 poc_hcomm_read，
  * host 侧 aclrtBinaryGetFunction 按原名查询。
  */
 
 #include "poc_kernel_common.h"
 
-extern "C" __attribute__((aiv)) __global__ __aicore__ void poc_hcomm_read(PocKernelArgs args)
+extern "C" __global__ __aicore__ void poc_hcomm_read(PocKernelArgs args)
 {
     if (GetBlockIdx() != 0) {
         return;
