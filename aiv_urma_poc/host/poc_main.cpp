@@ -266,16 +266,36 @@ int LoadPocKernel(PocDynApi &api, const std::string &imagePath, const char *func
     }
     printf("[POC] kernel image: %s (%zu bytes)\n", imagePath.c_str(), binBuf.size());
 
-    void *binDesc = api.aclrtCreateBinary(binBuf.data(), binBuf.size());
-    if (binDesc == nullptr) {
-        printf("[POC][ERROR] aclrtCreateBinary failed\n");
-        return -1;
+    // 优先对齐 HCCL 950 AIV 生产路径（hccl_aiv_utils.cc）：aclrtBinaryLoadFromFile + LAZY_LOAD；
+    // 符号缺失或加载失败时回退 CreateBinary + BinaryLoad 内存路径
+    int32_t ret = -1;
+    if (api.aclrtBinaryLoadFromFile != nullptr) {
+        PocBinaryLoadOption loadOpt {};
+        loadOpt.type = POC_BINARY_LOAD_OPT_LAZY_LOAD;
+        loadOpt.value.isLazyLoad = 1;
+        PocBinaryLoadOptions loadOpts {&loadOpt, 1};
+        ret = api.aclrtBinaryLoadFromFile(imagePath.c_str(), &loadOpts, &binHandle);
+        if (ret == 0 && binHandle != nullptr) {
+            printf("[POC] kernel binary loaded via aclrtBinaryLoadFromFile(LAZY_LOAD)\n");
+        } else {
+            printf("[POC][WARN] aclrtBinaryLoadFromFile ret=%d binHandle=%p, fallback to CreateBinary+BinaryLoad\n",
+                   ret, binHandle);
+            binHandle = nullptr;
+        }
     }
-    int32_t ret = api.aclrtBinaryLoad(binDesc, &binHandle);
-    (void)api.aclrtDestroyBinary(binDesc);
-    if (ret != 0 || binHandle == nullptr) {
-        printf("[POC][ERROR] aclrtBinaryLoad ret=%d binHandle=%p\n", ret, binHandle);
-        return -1;
+    if (binHandle == nullptr) {
+        void *binDesc = api.aclrtCreateBinary(binBuf.data(), binBuf.size());
+        if (binDesc == nullptr) {
+            printf("[POC][ERROR] aclrtCreateBinary failed\n");
+            return -1;
+        }
+        ret = api.aclrtBinaryLoad(binDesc, &binHandle);
+        (void)api.aclrtDestroyBinary(binDesc);
+        if (ret != 0 || binHandle == nullptr) {
+            printf("[POC][ERROR] aclrtBinaryLoad ret=%d binHandle=%p\n", ret, binHandle);
+            return -1;
+        }
+        printf("[POC] kernel binary loaded via aclrtCreateBinary+aclrtBinaryLoad\n");
     }
     // 诊断：打印 fatbin 中注册的 Function 数量（符号缺失的旧版本 runtime 上自动跳过）
     if (api.aclrtBinaryGetFunctionCount != nullptr) {
@@ -341,17 +361,22 @@ std::string DecodeKernelStatus(uint64_t st)
     return buf;
 }
 
-// AIV 引擎下发：attr 取值复刻 CANN 开源 acl_rt.h（SCHEM_MODE=1 / ENGINE_TYPE=3 / AIV=1），
-// 对齐官方 HCCL AIV 样例 launch_kernel.cc（schemMode=1 + engineType=AIV）；
-// 如需执行超时保护，可再追加 ACL_RT_LAUNCH_KERNEL_ATTR_TIMEOUT_US（=8）属性
+// AIV 引擎下发：attr 取值复刻 CANN 开源 acl_rt.h（SCHEM_MODE=1 / ENGINE_TYPE=3 / AIV=1 /
+// TIMEOUT_US=8），并对齐 HCCL 950 AIV 生产下发（hicann/hcomm hccl_aiv_utils.cc 的三 attr 组合）
 int LaunchPocKernel(PocDynApi &api, void *func, void *stream, PocKernelArgs &args)
 {
-    PocLaunchKernelAttr attrs[2] {};
+    // 三 attr 完全对齐 HCCL 950 AIV 生产下发（hccl_aiv_utils.cc::ExecuteKernelLaunchInner）：
+    // SCHEM_MODE=1 + TIMEOUT_US（兜底防永久 hang）+ ENGINE_TYPE=AIV
+    constexpr uint32_t POC_KERNEL_TIMEOUT_US = 60U * 1000U * 1000U;  // 60s
+    PocLaunchKernelAttr attrs[3] {};
     attrs[0].id = POC_LAUNCH_ATTR_SCHEM_MODE;
     attrs[0].value.schemMode = 1;
-    attrs[1].id = POC_LAUNCH_ATTR_ENGINE_TYPE;
-    attrs[1].value.engineType = POC_ENGINE_TYPE_AIV;
-    PocLaunchKernelCfg cfg {attrs, 2};
+    attrs[1].id = POC_LAUNCH_ATTR_TIMEOUT_US;
+    attrs[1].value.timeoutUs.timeoutLow = POC_KERNEL_TIMEOUT_US;
+    attrs[1].value.timeoutUs.timeoutHigh = 0;
+    attrs[2].id = POC_LAUNCH_ATTR_ENGINE_TYPE;
+    attrs[2].value.engineType = POC_ENGINE_TYPE_AIV;
+    PocLaunchKernelCfg cfg {attrs, 3};
     return api.aclrtLaunchKernelWithHostArgs(func, 1, stream, &cfg, &args, sizeof(args), nullptr, 0);
 }
 

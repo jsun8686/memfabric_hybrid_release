@@ -50,6 +50,8 @@ int PocDynApi::Load(const std::string &ascendHome)
     POC_DLSYM(aclrtCreateBinary, aclHandle, "aclrtCreateBinary");
     POC_DLSYM(aclrtDestroyBinary, aclHandle, "aclrtDestroyBinary");
     POC_DLSYM(aclrtBinaryLoad, aclHandle, "aclrtBinaryLoad");
+    // OPTIONAL：缺失时回退 CreateBinary+BinaryLoad 内存路径
+    POC_DLSYM_OPT(aclrtBinaryLoadFromFile, aclHandle, "aclrtBinaryLoadFromFile");
     POC_DLSYM(aclrtBinaryUnLoad, aclHandle, "aclrtBinaryUnLoad");
     POC_DLSYM(aclrtBinaryGetFunction, aclHandle, "aclrtBinaryGetFunction");
     POC_DLSYM(aclrtLaunchKernelWithHostArgs, aclHandle, "aclrtLaunchKernelWithHostArgs");

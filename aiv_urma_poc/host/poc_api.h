@@ -29,6 +29,24 @@ constexpr int32_t POC_INFO_TYPE_MAINBOARD_ID = 39;
 // aclrtLaunchKernelAttrId
 constexpr int32_t POC_LAUNCH_ATTR_SCHEM_MODE = 1;   // ACL_RT_LAUNCH_KERNEL_ATTR_SCHEM_MODE
 constexpr int32_t POC_LAUNCH_ATTR_ENGINE_TYPE = 3;  // ACL_RT_LAUNCH_KERNEL_ATTR_ENGINE_TYPE
+constexpr int32_t POC_LAUNCH_ATTR_TIMEOUT_US = 8;   // ACL_RT_LAUNCH_KERNEL_ATTR_TIMEOUT_US
+
+// aclrtBinaryLoadOptions（复刻 dl_cann_api_def.h / CANN acl_rt.h）
+constexpr int32_t POC_BINARY_LOAD_OPT_LAZY_LOAD = 1;  // ACL_RT_BINARY_LOAD_OPT_LAZY_LOAD
+union PocBinaryLoadOptionValue {
+    uint32_t isLazyLoad;
+    uint32_t magic;
+    int32_t cpuKernelMode;
+    uint32_t rsv[4];
+};
+struct PocBinaryLoadOption {
+    int32_t type;  // aclrtBinaryLoadOptionType
+    PocBinaryLoadOptionValue value;
+};
+struct PocBinaryLoadOptions {
+    PocBinaryLoadOption *options;
+    size_t numOpt;
+};
 // aclrtEngineType
 constexpr int32_t POC_ENGINE_TYPE_AIC = 0;          // ACL_RT_ENGINE_TYPE_AIC
 constexpr int32_t POC_ENGINE_TYPE_AIV = 1;          // ACL_RT_ENGINE_TYPE_AIV
@@ -99,6 +117,8 @@ struct PocDynApi {
     void *(*aclrtCreateBinary)(const void *, size_t);
     int32_t (*aclrtDestroyBinary)(void *);
     int32_t (*aclrtBinaryLoad)(const void *, void **);
+    // HCCL 950 AIV 路径（hccl_aiv_utils.cc）使用的加载方式：FromFile + LAZY_LOAD 选项
+    int32_t (*aclrtBinaryLoadFromFile)(const char *, PocBinaryLoadOptions *, void **);
     int32_t (*aclrtBinaryUnLoad)(void *);
     int32_t (*aclrtBinaryGetFunction)(const void *, const char *, void **);
     int32_t (*aclrtLaunchKernelWithHostArgs)(void *, uint32_t, void *, PocLaunchKernelCfg *, void *, size_t,
