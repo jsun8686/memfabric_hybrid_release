@@ -24,11 +24,21 @@
 
 #include "poc_kernel_common.h"
 
-extern "C" __global__ __aicore__ void poc_hcomm_read(PocKernelArgs args)
+// 参数拍平原因见 poc_hcomm_write.cpp 注释（bisheng ABI 结构体指针降级 + overflow 尾槽）。
+extern "C" __global__ __aicore__ void poc_hcomm_read(uint64_t channel, uint64_t localAddr,
+                                                     uint64_t remoteAddr, uint64_t size,
+                                                     uint64_t chunkSize, uint64_t statusAddr)
 {
     if (GetBlockIdx() != 0) {
         return;
     }
+    PocKernelArgs args {};
+    args.channel = channel;
+    args.localAddr = localAddr;
+    args.remoteAddr = remoteAddr;
+    args.size = size;
+    args.chunkSize = chunkSize;
+    args.statusAddr = statusAddr;
     PocWriteStatus(args.statusAddr, POC_STAGE_ENTERED);  // 诊断：非 0 入口标记
     PocEchoArgs(&args);                                  // 诊断：回显 kernel 实际收到的参数
     const int32_t ret = PocTransferImpl(&args, true);

@@ -137,7 +137,7 @@ read 路径（client AIV 内核从 server 拉）：
 | `kernel status=0x1xxx` | 低 12 位为内核内错误码段：0x1xx=Init 失败、0x2xx=WriteNbi/ReadNbi 失败（含偏移信息）、0x3xx=Commit 失败、0x4xx=Drain 失败/超时 |
 | `kernel done ..., status=0` | 连入口标记都没写上 = kernel 未执行或 statusAddr 不可见。内核按阶段回写非 0 标记（0xE1=已入内核、0xE2=Init 成功、0xE3=Nbi 全部入队、0xE4=Commit 成功），host 日志会直接打印阶段解码；同时对照 `launch args` 与 `kernel echo args` 两行：回显全 0 说明 kernel 没跑，回显与 launch args 不一致说明参数错位。加载阶段的 `kernel param count/offset/size` 探针用于核对 host argsSize 与设备签名（含工具链 overflow_status 尾参）是否匹配 |
 | write 校验 FAIL | 降低 `--size/--chunk` 复测；对照 `--verify read` 是否同样失败以区分方向性问题 |
-| kernel 注册成功但完全不执行（阶段标记/回显全 0） | 先跑自检切分故障域：`./build/poc/poc_aiv_urma --role client --self-test --device <id>`（不建链不碰 Hcomm，仅验证 fatbin→AIV 下发→GM 写回）。自检 PASS ⇒ hcomm 内核的设备侧符号未解析（看 build.sh 末尾的 UNDEF 检查）；自检也 FAIL ⇒ fatbin 格式/下发链路问题。另请收集 runtime 日志：`ASCEND_GLOBAL_LOG_LEVEL=0` 前置重跑 |
+| kernel 注册成功但完全不执行（阶段标记/回显全 0） | **已定位（A5 实测）**：bisheng ABI 会把 by-value 结构体参数降级为 8B 指针传递，且非 cpu 模式工具链在 kernel 签名尾部恒追加 8B `GM_ADDR overflow_status` 尾参——fatbin 的 `__CCE_KernelArgSize` NOTE 记录的是"设备侧参数块尺寸（含尾槽）"（可用 `readelf -x __CCE_KernelArgSize <fatbin>` 实测），host 的 hostArgs/argsSize 必须与该口径一致，否则任务被 runtime 静默丢弃（launch/sync 均 ret=0）。修法：kernel 参数拍平为标量（对齐 HCCL 950 AIV 内核），hostArgs = N 个 8B 参数 + 8B 尾槽（尾槽内容 = 8B 设备 buffer 指针）。自检 `./build/poc/poc_aiv_urma --role client --self-test --device <id>` 跑 {file-lazy,mem-eager}×{attrs-on,off}×{tail-on,off} 八格矩阵，预期 tail-on 格 PASS。仍全 FAIL 则收集 `ASCEND_GLOBAL_LOG_LEVEL=0 ASCEND_SLOG_PRINT_TO_STDOUT=1` 日志 |
 
 ## 与 MemFabric 阶段 1 的衔接
 

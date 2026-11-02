@@ -24,11 +24,24 @@
 
 #include "poc_kernel_common.h"
 
-extern "C" __global__ __aicore__ void poc_hcomm_write(PocKernelArgs args)
+// 参数必须拍平为标量（对齐 HCCL 950 AIV 内核风格）：bisheng ABI 会把 by-value 的
+// 48B 结构体参数降级为 8B 指针传递（fatbin 的 __CCE_KernelArgSize NOTE 实测 = 16 =
+// 8B 指针 + 8B overflow 尾槽，而非 48+8），host 按结构体内联传参会被 runtime 截断/
+// 丢弃，kernel 拿不到有效参数。拍平后 NOTE = 6x8 + 8 尾槽 = 56B，host 按 56B 传参。
+extern "C" __global__ __aicore__ void poc_hcomm_write(uint64_t channel, uint64_t localAddr,
+                                                      uint64_t remoteAddr, uint64_t size,
+                                                      uint64_t chunkSize, uint64_t statusAddr)
 {
     if (GetBlockIdx() != 0) {
         return;
     }
+    PocKernelArgs args {};
+    args.channel = channel;
+    args.localAddr = localAddr;
+    args.remoteAddr = remoteAddr;
+    args.size = size;
+    args.chunkSize = chunkSize;
+    args.statusAddr = statusAddr;
     PocWriteStatus(args.statusAddr, POC_STAGE_ENTERED);  // 诊断：非 0 入口标记
     PocEchoArgs(&args);                                  // 诊断：回显 kernel 实际收到的参数
     const int32_t ret = PocTransferImpl(&args, false);
