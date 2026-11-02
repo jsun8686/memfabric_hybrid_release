@@ -55,6 +55,7 @@ struct PocOptions {
     std::string verify = "write";           // write | read
     uint32_t statusTimeoutSec = 120;
     std::string kernelImage;                // fatbin 路径，默认 <exe 同目录>/poc_hcomm_kernel.o
+    bool selfTest = false;                  // --self-test：不建链不碰 Hcomm，仅验证 fatbin->AIV->GM 链路
 };
 
 void Usage(const char *bin)
@@ -70,7 +71,9 @@ void Usage(const char *bin)
            "  --rootinfo PATH     rootinfo path (default /etc/hccl_rootinfo.json)\n"
            "  --verify write|read write: client->server write path; read: client pull from server\n"
            "  --status-timeout S  channel ready wait timeout seconds (default %u)\n"
-           "  --kernel-image PATH fatbin kernel image (default <exe_dir>/poc_hcomm_kernel.o)\n",
+           "  --kernel-image PATH fatbin kernel image (default <exe_dir>/poc_hcomm_kernel.o)\n"
+           "  --self-test         自检模式：加载 fatbin 并启动 poc_selftest 内核（不建链、不碰 Hcomm），\n"
+           "                    用于切分「下发链路坏」与「hcomm 内核符号未解析」两类故障\n",
            bin, POC_DEFAULT_OOB_PORT, (unsigned long long)POC_DEFAULT_BUF_SIZE,
            (unsigned long long)POC_DEFAULT_CHUNK, POC_DEFAULT_HCOMM_PORT, 120U);
 }
@@ -110,6 +113,8 @@ int ParseArgs(int argc, char **argv, PocOptions &opt)
             opt.statusTimeoutSec = static_cast<uint32_t>(atoi(next("--status-timeout")));
         } else if (k == "--kernel-image") {
             opt.kernelImage = next("--kernel-image");
+        } else if (k == "--self-test") {
+            opt.selfTest = true;
         } else if (k == "--help" || k == "-h") {
             Usage(argv[0]);
             exit(0);
@@ -363,7 +368,7 @@ std::string DecodeKernelStatus(uint64_t st)
 
 // AIV 引擎下发：attr 取值复刻 CANN 开源 acl_rt.h（SCHEM_MODE=1 / ENGINE_TYPE=3 / AIV=1 /
 // TIMEOUT_US=8），并对齐 HCCL 950 AIV 生产下发（hicann/hcomm hccl_aiv_utils.cc 的三 attr 组合）
-int LaunchPocKernel(PocDynApi &api, void *func, void *stream, PocKernelArgs &args)
+int LaunchPocKernel(PocDynApi &api, void *func, void *stream, void *hostArgs, size_t argsSize)
 {
     // 三 attr 完全对齐 HCCL 950 AIV 生产下发（hccl_aiv_utils.cc::ExecuteKernelLaunchInner）：
     // SCHEM_MODE=1 + TIMEOUT_US（兜底防永久 hang）+ ENGINE_TYPE=AIV
@@ -377,7 +382,7 @@ int LaunchPocKernel(PocDynApi &api, void *func, void *stream, PocKernelArgs &arg
     attrs[2].id = POC_LAUNCH_ATTR_ENGINE_TYPE;
     attrs[2].value.engineType = POC_ENGINE_TYPE_AIV;
     PocLaunchKernelCfg cfg {attrs, 3};
-    return api.aclrtLaunchKernelWithHostArgs(func, 1, stream, &cfg, &args, sizeof(args), nullptr, 0);
+    return api.aclrtLaunchKernelWithHostArgs(func, 1, stream, &cfg, hostArgs, argsSize, nullptr, 0);
 }
 
 }  // namespace
@@ -472,6 +477,63 @@ int main(int argc, char **argv)
         (void)api.rtGetDeviceInfo(static_cast<uint32_t>(userId), 0, POC_INFO_TYPE_MAINBOARD_ID, &mainboardId);
         printf("[POC] userId=%d phyId=%d sdid=%u serverId=%u superPodId=%u mainboardId=%lld\n", userId, phyId, sdid,
                serverId, superPodId, static_cast<long long>(mainboardId));
+
+        // ── 自检模式（--self-test）：不建链、不碰 Hcomm，仅验证 fatbin -> AIV 下发 -> GM 写回 ──
+        // 用于切分故障域：自检 PASS 但 hcomm 内核不执行 => hcomm 内核设备侧符号问题；
+        // 自检也 FAIL => fatbin 格式/下发链路本身问题
+        if (opt.selfTest) {
+            ret = api.aclrtMalloc(&statusBuf, 64, 0);
+            if (ret != 0 || statusBuf == nullptr) {
+                printf("[POC][ERROR] aclrtMalloc status ret=%d\n", ret);
+                break;
+            }
+            (void)api.aclrtMemset(statusBuf, 64, 0, 64);
+            ret = api.aclrtCreateStream(&stream);
+            if (ret != 0 || stream == nullptr) {
+                printf("[POC][ERROR] aclrtCreateStream ret=%d\n", ret);
+                break;
+            }
+            const std::string kernelImage =
+                opt.kernelImage.empty() ? DefaultKernelImagePath() : opt.kernelImage;
+            void *func = nullptr;
+            if (LoadPocKernel(api, kernelImage, "poc_selftest", kernelBin, binHandle, func) != 0) {
+                break;
+            }
+            constexpr uint64_t POC_SELFTEST_MAGIC = 0x5154A5155154A515ULL;
+            uint64_t selfArgs[2] = {reinterpret_cast<uint64_t>(statusBuf), POC_SELFTEST_MAGIC};
+            printf("[POC] self-test launch args: status=%#llx magic=%#llx\n",
+                   (unsigned long long)selfArgs[0], (unsigned long long)selfArgs[1]);
+            const uint64_t t0 = PocNowUs();
+            ret = LaunchPocKernel(api, func, stream, selfArgs, sizeof(selfArgs));
+            if (ret != 0) {
+                printf("[POC][ERROR] self-test aclrtLaunchKernelWithHostArgs ret=%d\n", ret);
+                break;
+            }
+            ret = api.aclrtSynchronizeStream(stream);
+            const uint64_t t1 = PocNowUs();
+            if (ret != 0) {
+                printf("[POC][ERROR] self-test SynchronizeStream ret=%d\n", ret);
+                break;
+            }
+            uint64_t selfDump[8] = {0};
+            ret = api.aclrtMemcpy(selfDump, sizeof(selfDump), statusBuf, sizeof(selfDump), 2 /*D2H*/);
+            if (ret != 0) {
+                printf("[POC][ERROR] self-test read status ret=%d\n", ret);
+                break;
+            }
+            printf("[POC] self-test kernel done in %llu us, status[0]=%#llx\n",
+                   (unsigned long long)(t1 - t0), (unsigned long long)selfDump[0]);
+            if (selfDump[0] == POC_SELFTEST_MAGIC) {
+                printf("[POC] SELF-TEST PASS: fatbin 加载 + AIV 下发 + GM 写回链路完好；\n"
+                       "[POC] hcomm 内核不执行请查设备侧符号（build.sh 的 UNDEF 检查输出）\n");
+                exitCode = 0;
+            } else {
+                printf("[POC][ERROR] SELF-TEST FAIL: kernel 未执行（status[0]=%#llx），\n"
+                       "[POC] 问题在 fatbin 格式/下发链路本身，与 hcomm 无关\n",
+                       (unsigned long long)selfDump[0]);
+            }
+            break;
+        }
 
         // ── 3. EID ──
         std::array<uint8_t, POC_EID_LEN> eid {};
@@ -667,7 +729,7 @@ int main(int argc, char **argv)
                    (unsigned long long)args.chunkSize, (unsigned long long)args.statusAddr);
 
             const uint64_t t0 = PocNowUs();
-            ret = LaunchPocKernel(api, func, stream, args);
+            ret = LaunchPocKernel(api, func, stream, &args, sizeof(args));
             if (ret != 0) {
                 printf("[POC][ERROR] aclrtLaunchKernelWithHostArgs(%s) ret=%d\n", funcName, ret);
                 if (opt.verify == "read") {

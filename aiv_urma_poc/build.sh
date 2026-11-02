@@ -57,8 +57,22 @@ fi
 # 拷贝到可执行文件同目录：host 默认加载 <exe_dir>/poc_hcomm_kernel.o（--kernel-image 可覆盖）
 cp -f "${FATBIN}" "${BUILD_DIR}/poc_hcomm_kernel.o"
 
+# fatbin 体检 1：未解析符号。ascendc_fatbin_library 产出的 OBJECT 不做最终设备链接，
+# 若 hcomm URMA 原语等实现来自设备库而未被内联/链接，会留下 UNDEF 符号——
+# 运行时表现为"函数注册成功但 kernel 不执行"（lazy load 解析失败）
+if command -v readelf >/dev/null 2>&1; then
+    UNDEF_COUNT="$(readelf -sW "${BUILD_DIR}/poc_hcomm_kernel.o" 2>/dev/null | grep -c ' UNDEF ' || true)"
+    echo "[POC] fatbin UNDEF symbol count: ${UNDEF_COUNT}"
+    if [ "${UNDEF_COUNT}" != "0" ]; then
+        echo "[POC][WARN] fatbin 存在未解析符号，明细："
+        readelf -sW "${BUILD_DIR}/poc_hcomm_kernel.o" 2>/dev/null | grep ' UNDEF ' | head -20
+    fi
+fi
+
 echo "[POC] build done:"
 echo "  host bin : ${BIN}"
 echo "  fatbin   : ${BUILD_DIR}/poc_hcomm_kernel.o"
-echo "[POC] 验收建议：readelf -sW ${BUILD_DIR}/poc_hcomm_kernel.o | grep poc_hcomm"
-echo "      期望看到无后缀的 GLOBAL FUNC 符号 poc_hcomm_write / poc_hcomm_read"
+echo "[POC] 验收建议：readelf -sW ${BUILD_DIR}/poc_hcomm_kernel.o | grep poc_"
+echo "      期望看到无后缀的 GLOBAL FUNC 符号 poc_hcomm_write / poc_hcomm_read / poc_selftest"
+echo "[POC] 自检：${BIN} --role client --self-test --device 4"
+echo "      不建链不碰 Hcomm，仅验证 fatbin->AIV 下发->GM 写回；PASS 则故障域收敛到 hcomm 内核符号"
