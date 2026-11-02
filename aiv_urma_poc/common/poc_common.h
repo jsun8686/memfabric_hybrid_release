@@ -29,6 +29,18 @@ constexpr uint64_t POC_STATUS_PENDING = 0;
 constexpr uint64_t POC_STATUS_OK = 1;
 constexpr uint64_t POC_STATUS_FAIL_BASE = 0x1000;
 
+// 诊断阶段标记（kernel 内逐阶段回写，均为非 0 值，与 memset 初值/PENDING 可区分）：
+// 若 host 读到 0 说明 kernel 一行都没执行（或 statusAddr 失效）；
+// 读到某个阶段标记说明 kernel 停在该阶段与下一阶段之间。
+constexpr uint64_t POC_STAGE_ENTERED = 0xE1;    // 已进入 kernel（block0）
+constexpr uint64_t POC_STAGE_INIT_OK = 0xE2;    // Hcomm Init 成功
+constexpr uint64_t POC_STAGE_QUEUE_OK = 0xE3;   // 分块 WriteNbi/ReadNbi 全部入队
+constexpr uint64_t POC_STAGE_COMMIT_OK = 0xE4;  // Commit 成功（Drain 前）
+
+// 状态区布局（host 侧 statusBuf 共 64B，kernel 仅当 statusAddr!=0 时写）：
+//   [0] 状态/阶段标记；[1..4] 诊断回显 = kernel 实际收到的 size/chunkSize/channel/statusAddr
+constexpr uint32_t POC_STATUS_ECHO_WORDS = 4;
+
 // 默认参数
 constexpr uint64_t POC_DEFAULT_BUF_SIZE = 1ULL << 20;  // 1MB
 constexpr uint64_t POC_DEFAULT_CHUNK = 64ULL << 10;    // 64KB

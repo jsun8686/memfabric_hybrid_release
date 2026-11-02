@@ -291,7 +291,54 @@ int LoadPocKernel(PocDynApi &api, const std::string &imagePath, const char *func
         return -1;
     }
     printf("[POC] kernel function ready: %s\n", funcName);
+    // 诊断：runtime 视角的参数布局。非 cpu 模式工具链会在 kernel 签名尾部追加
+    // GM_ADDR overflow_status（8B），预期 param0=PocKernelArgs(48B@0)、param1=8B@48；
+    // host 侧 argsSize 只含用户参数（48B），尾参由 runtime 自行处理
+    if (api.aclrtFunctionGetParamCount != nullptr && api.aclrtFunctionGetParamInfo != nullptr) {
+        size_t paramCount = 0;
+        if (api.aclrtFunctionGetParamCount(func, &paramCount) == 0) {
+            printf("[POC] kernel param count: %zu (expect %zu user + 1 overflow tail)\n",
+                   paramCount, sizeof(PocKernelArgs) / sizeof(uint64_t));
+            for (size_t i = 0; i < paramCount && i < 4; ++i) {
+                size_t off = 0, sz = 0;
+                if (api.aclrtFunctionGetParamInfo(func, i, &off, &sz) == 0) {
+                    printf("[POC]   param[%zu]: offset=%zu size=%zu\n", i, off, sz);
+                }
+            }
+        }
+    }
     return 0;
+}
+
+// 诊断：状态/阶段标记解码（与 common/poc_common.h、kernel/poc_kernel_common.h 保持一致）
+std::string DecodeKernelStatus(uint64_t st)
+{
+    char buf[128];
+    switch (st) {
+        case POC_STATUS_PENDING:  // 0：连入口标记都没写上
+            return "kernel 未执行（或 statusAddr 对 kernel 不可见/为 0）";
+        case POC_STATUS_OK:
+            return "OK";
+        case POC_STAGE_ENTERED:
+            return "已进 kernel 入口，停在 Hcomm Init 之前/之中（疑似 Init 卡死或设备异常）";
+        case POC_STAGE_INIT_OK:
+            return "Init 成功，停在分块 Nbi 循环中（疑似 WriteNbi/ReadNbi 卡死）";
+        case POC_STAGE_QUEUE_OK:
+            return "Nbi 全部入队，停在 Commit 之前/之中";
+        case POC_STAGE_COMMIT_OK:
+            return "Commit 成功，停在 Drain（超时/通道异常未完成）";
+        default:
+            break;
+    }
+    if (st >= POC_STATUS_FAIL_BASE) {
+        const uint64_t code = st - POC_STATUS_FAIL_BASE;
+        const char *stage = (code >= 0x400) ? "Drain" : (code >= 0x300) ? "Commit"
+                          : (code >= 0x200) ? "Nbi 分块" : (code >= 0x100) ? "Init" : "?";
+        snprintf(buf, sizeof(buf), "%s 失败（内嵌码 %#llx）", stage, (unsigned long long)code);
+        return buf;
+    }
+    snprintf(buf, sizeof(buf), "未知状态 %#llx", (unsigned long long)st);
+    return buf;
 }
 
 // AIV 引擎下发：attr 取值复刻 CANN 开源 acl_rt.h（SCHEM_MODE=1 / ENGINE_TYPE=3 / AIV=1），
@@ -589,6 +636,10 @@ int main(int argc, char **argv)
             args.size = opt.size;
             args.chunkSize = opt.chunk;
             args.statusAddr = reinterpret_cast<uint64_t>(statusBuf);
+            printf("[POC] launch args: channel=%#llx local=%#llx remote=%#llx size=%llu chunk=%llu status=%#llx\n",
+                   (unsigned long long)args.channel, (unsigned long long)args.localAddr,
+                   (unsigned long long)args.remoteAddr, (unsigned long long)args.size,
+                   (unsigned long long)args.chunkSize, (unsigned long long)args.statusAddr);
 
             const uint64_t t0 = PocNowUs();
             ret = LaunchPocKernel(api, func, stream, args);
@@ -609,8 +660,9 @@ int main(int argc, char **argv)
             }
             const uint64_t t1 = PocNowUs();
 
-            uint64_t statusHost = 0;
-            ret = api.aclrtMemcpy(&statusHost, sizeof(statusHost), statusBuf, sizeof(statusBuf), 2 /*D2H*/);
+            // 状态区共 64B：[0]=状态/阶段标记，[1..4]=kernel 回显的实际收参（诊断）
+            uint64_t statusDump[8] = {0};
+            ret = api.aclrtMemcpy(statusDump, sizeof(statusDump), statusBuf, sizeof(statusDump), 2 /*D2H*/);
             if (ret != 0) {
                 printf("[POC][ERROR] read kernel status ret=%d\n", ret);
                 if (opt.verify == "read") {
@@ -618,10 +670,15 @@ int main(int argc, char **argv)
                 }
                 break;
             }
-            printf("[POC] kernel done in %llu us, status=%llu\n", (unsigned long long)(t1 - t0),
-                   (unsigned long long)statusHost);
+            const uint64_t statusHost = statusDump[0];
+            printf("[POC] kernel done in %llu us, status=%llu (%s)\n", (unsigned long long)(t1 - t0),
+                   (unsigned long long)statusHost, DecodeKernelStatus(statusHost).c_str());
+            printf("[POC] kernel echo args: size=%llu chunk=%llu channel=%#llx statusAddr=%#llx\n",
+                   (unsigned long long)statusDump[1], (unsigned long long)statusDump[2],
+                   (unsigned long long)statusDump[3], (unsigned long long)statusDump[4]);
             if (statusHost != POC_STATUS_OK) {
-                printf("[POC][ERROR] kernel status not OK: 0x%llx\n", (unsigned long long)statusHost);
+                printf("[POC][ERROR] kernel status not OK: 0x%llx (%s)\n", (unsigned long long)statusHost,
+                       DecodeKernelStatus(statusHost).c_str());
                 if (opt.verify == "read") {
                     (void)NotifyReadResult(oobFd, false);
                 }

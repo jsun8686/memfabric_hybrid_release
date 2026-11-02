@@ -29,7 +29,8 @@ extern "C" __global__ __aicore__ void poc_hcomm_write(PocKernelArgs args)
     if (GetBlockIdx() != 0) {
         return;
     }
-    PocWriteStatus(args.statusAddr, POC_STATUS_PENDING);
+    PocWriteStatus(args.statusAddr, POC_STAGE_ENTERED);  // 诊断：非 0 入口标记
+    PocEchoArgs(&args);                                  // 诊断：回显 kernel 实际收到的参数
     const int32_t ret = PocTransferImpl(&args, false);
     PocWriteStatus(args.statusAddr, (ret == 0) ? POC_STATUS_OK : (POC_STATUS_FAIL_BASE + ret));
 }

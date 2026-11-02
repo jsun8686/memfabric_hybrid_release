@@ -105,6 +105,10 @@ struct PocDynApi {
                                              void *, size_t);
     // 诊断（可选）：打印 binHandle 下注册的 Function 数量，缺失不影响主流程
     int32_t (*aclrtBinaryGetFunctionCount)(const void *, uint32_t *);
+    // 诊断（可选）：查询 runtime 视角的 kernel 参数布局（个数/偏移/大小），用于核对
+    // host 侧 argsSize 是否与设备侧签名（含工具链追加的 overflow_status 尾参）匹配
+    int32_t (*aclrtFunctionGetParamCount)(const void *, size_t *);
+    int32_t (*aclrtFunctionGetParamInfo)(const void *, size_t, size_t *, size_t *);
     // libhcomm
     HcommResult (*HcommEndpointCreate)(const EndpointDesc *, EndpointHandle *);
     HcommResult (*HcommEndpointDestroy)(EndpointHandle);

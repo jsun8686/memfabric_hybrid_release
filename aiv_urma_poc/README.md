@@ -135,6 +135,7 @@ read 路径（client AIV 内核从 server 拉）：
 | `HcommEndpointCreate ret!=0` | EID/协议与组网不符：核对 rootinfo 中 EID 归属、两机是否 UB_CTP 互联（PoC 不覆盖 UB_RTP/超节点 PC16 组网） |
 | `channel not ready` | 看 hcomm 日志（`ASCEND_GLOBAL_LOG_LEVEL=0` 前置运行）；核对两端 `--hcomm-port` 一致、server 侧端口可达；`channelName` 两端一致 |
 | `kernel status=0x1xxx` | 低 12 位为内核内错误码段：0x1xx=Init 失败、0x2xx=WriteNbi/ReadNbi 失败（含偏移信息）、0x3xx=Commit 失败、0x4xx=Drain 失败/超时 |
+| `kernel done ..., status=0` | 连入口标记都没写上 = kernel 未执行或 statusAddr 不可见。内核按阶段回写非 0 标记（0xE1=已入内核、0xE2=Init 成功、0xE3=Nbi 全部入队、0xE4=Commit 成功），host 日志会直接打印阶段解码；同时对照 `launch args` 与 `kernel echo args` 两行：回显全 0 说明 kernel 没跑，回显与 launch args 不一致说明参数错位。加载阶段的 `kernel param count/offset/size` 探针用于核对 host argsSize 与设备签名（含工具链 overflow_status 尾参）是否匹配 |
 | write 校验 FAIL | 降低 `--size/--chunk` 复测；对照 `--verify read` 是否同样失败以区分方向性问题 |
 
 ## 与 MemFabric 阶段 1 的衔接

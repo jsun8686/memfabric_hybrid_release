@@ -35,6 +35,19 @@ static inline __aicore__ void PocWriteStatus(uint64_t statusAddr, uint64_t value
     }
 }
 
+// 诊断：把 kernel 实际收到的参数回显到状态区 [1..4]，host 侧对照打印值可判别
+// "kernel 没跑" 与 "跑了但参数错位/为零" 两类故障
+static inline __aicore__ void PocEchoArgs(const PocKernelArgs *args)
+{
+    if (args->statusAddr != 0) {
+        volatile uint64_t *echo = reinterpret_cast<volatile uint64_t *>(args->statusAddr);
+        echo[1] = args->size;
+        echo[2] = args->chunkSize;
+        echo[3] = args->channel;
+        echo[4] = args->statusAddr;
+    }
+}
+
 // 传输公共实现：Init(512B UB workspace) -> 分块 Nbi(commit=false) -> Commit -> Drain
 // 错误码分段：0x1xx=Init 失败、0x2xx=分块 Nbi 失败（内嵌偏移与返回码）、0x3xx=Commit、0x4xx=Drain
 static inline __aicore__ int32_t PocTransferImpl(const PocKernelArgs *args, bool isRead)
@@ -50,6 +63,7 @@ static inline __aicore__ int32_t PocTransferImpl(const PocKernelArgs *args, bool
     if (ret != 0) {
         return 0x100 + ret;  // Init 失败
     }
+    PocWriteStatus(args->statusAddr, POC_STAGE_INIT_OK);
 
     const uint64_t chunk = (args->chunkSize != 0) ? args->chunkSize : POC_DEFAULT_CHUNK;
     uint64_t offset = 0;
@@ -72,11 +86,14 @@ static inline __aicore__ int32_t PocTransferImpl(const PocKernelArgs *args, bool
         offset += cur;
     }
 
+    PocWriteStatus(args->statusAddr, POC_STAGE_QUEUE_OK);
+
     // 发布循环中攒下的 WQE
     ret = hcomm.Commit(args->channel);
     if (ret != 0) {
         return 0x300 + ret;  // Commit 失败
     }
+    PocWriteStatus(args->statusAddr, POC_STAGE_COMMIT_OK);
     ret = hcomm.Drain(args->channel);
     if (ret != 0) {
         return 0x400 + ret;  // Drain 失败（超时/通道异常）
