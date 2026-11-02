@@ -20,15 +20,30 @@
 #include "kernel_operator.h"
 
 // 写回 magic 到 statusAddr；参数走与正式内核相同的打包下传约定（值打包 + 工具链尾参）
+// 写回路径与官方 fatbin 样例 6_memory_loaded_vector_add 对齐：UB(LocalTensor) -> GM
+// DataCopy（MTE3）。950/AIV 上裸指针标量 GM store 对 host D2H 恒不可见（dsb/dci 无效，
+// 实验证伪）；样例同机实测 PASS 证明 DataCopy 是可见写回路径。本文件不依赖 hcomm 头文件。
 extern "C" __global__ __aicore__ void poc_selftest(uint64_t statusAddr, uint64_t magic)
 {
+    using namespace AscendC;
     if (AscendC::GetBlockIdx() == 0 && statusAddr != 0) {
-        *(volatile uint64_t *)statusAddr = magic;
+        TPipe pipe;
+        TBuf<TPosition::VECOUT> buf;
+        pipe.InitBuffer(buf, 64);
+        LocalTensor<uint64_t> ub = buf.Get<uint64_t>();
+        for (uint32_t i = 0; i < 8; i++) {
+            ub(i) = 0;
+        }
+        ub(0) = magic;
+        SetFlag<HardEvent::S_MTE3>(0);
+        WaitFlag<HardEvent::S_MTE3>(0);
+        GlobalTensor<uint64_t> gm;
+        gm.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(statusAddr), 8);
+        DataCopy(gm, ub, 8);  // 整页 64B 刷出，DataCopy 最小粒度 32B
+        SetFlag<HardEvent::MTE3_S>(1);
+        WaitFlag<HardEvent::MTE3_S>(1);
     }
-    // c310 收尾 flush（与 poc_kernel_common.h 的 PocKernelEpilogue 同一序列；此处内联
-    // 展开以保持本文件不依赖 hcomm 头文件）：缺了它 AIV 的 GM 写对 host D2H 不可见。
-    // 依据：auto-gen 对 <<<>>> wrapper 恒追加（extract_host_stub.py，__DAV_C310__ 守卫），
-    // ascc 插件对 ASCEND950 恒追加（asc_dev_stub_generator.cpp）。
+    // c310 收尾 flush：保留（auto-gen/ascc 对 950 恒追加同序列，对 DataCopy 路径无害）
 #if defined(__DAV_C310__)
     pipe_barrier(PIPE_ALL);
     dsb(mem_dsb_t::DSB_ALL);

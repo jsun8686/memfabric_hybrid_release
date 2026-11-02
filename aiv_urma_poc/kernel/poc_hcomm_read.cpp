@@ -37,10 +37,12 @@ extern "C" __global__ __aicore__ void poc_hcomm_read(uint64_t channel, uint64_t 
         args.size = size;
         args.chunkSize = chunkSize;
         args.statusAddr = statusAddr;
-        PocWriteStatus(args.statusAddr, POC_STAGE_ENTERED);  // 诊断：非 0 入口标记
-        PocEchoArgs(&args);                                  // 诊断：回显 kernel 实际收到的参数
-        const int32_t ret = PocTransferImpl(&args, true);
-        PocWriteStatus(args.statusAddr, (ret == 0) ? POC_STATUS_OK : (POC_STATUS_FAIL_BASE + ret));
+        PocStatusWriter st;
+        PocStatusInit(st, args.statusAddr);
+        PocStatusSet(st, 0, POC_STAGE_ENTERED);  // 诊断：非 0 入口标记
+        PocEchoArgs(st, &args);                  // 诊断：回显 kernel 实际收到的参数
+        const int32_t ret = PocTransferImpl(&args, true, st);
+        PocStatusSet(st, 0, (ret == 0) ? POC_STATUS_OK : (POC_STATUS_FAIL_BASE + ret));
     }
     PocKernelEpilogue();  // c310 收尾 flush：GM 写对 host 可见的必要条件，所有核无条件执行
 }

@@ -27,20 +27,66 @@ using namespace AscendC;
 
 constexpr uint32_t POC_HCOMM_WS_SIZE = 512;  // HCOMM_URMA_TMP_BUF_SIZE，32 字节对齐由 TBuf 保证
 
-// 单核执行：PoC 只需一个 vector core 驱动一条 channel（多核切分属于阶段 1 工作）
-static inline __aicore__ void PocWriteStatus(uint64_t statusAddr, uint64_t value)
+// 状态页 UB 镜像 + DataCopy 整页刷出（950/AIV 写回铁律）：
+// 官方 fatbin 样例 6_memory_loaded_vector_add 在同机（Ascend950PR_9589 / CANN 9.1.0）实测
+// PASS，其唯一写回路径是 UB(LocalTensor) -> GM 的 DataCopy（MTE3 引擎）；
+// 而本 PoC 此前的 *(volatile uint64_t*)addr 裸指针标量 GM 写对 host D2H 恒不可见
+//（加 pipe_barrier/dsb/dci 冲刷同样无效，a917503 实验证伪）——AIV 核内标量 store 与
+// MTE3 写回是两条硬件路径，前者在 950 上不作为对 host 可见的写回路径使用。
+// DataCopy 最小粒度 32B，故状态页（64B = 8 x u64：[0]=status [1..4]=echo）整页镜像在 UB，
+// 每次更新整页刷出。
+struct PocStatusWriter {
+    TPipe pipe;                     // 与传输 workspace 共用一个 TPipe（AscendC 惯例单 pipe）
+    TBuf<TPosition::VECOUT> buf;    // 64B 状态页镜像
+    LocalTensor<uint64_t> ub;
+    uint64_t gmAddr = 0;
+};
+
+static inline __aicore__ void PocStatusInit(PocStatusWriter &w, uint64_t statusAddr)
 {
-    if (statusAddr != 0) {
-        *(volatile uint64_t *)statusAddr = value;
+    w.gmAddr = statusAddr;
+    if (statusAddr == 0) {
+        return;
+    }
+    w.pipe.InitBuffer(w.buf, 64);
+    w.ub = w.buf.Get<uint64_t>();
+    for (uint32_t i = 0; i < 8; i++) {
+        w.ub(i) = 0;
     }
 }
 
-// c310/A5 收尾 flush：kernel 返回前必须显式执行，否则 AIV 的 GM 写滞留在写缓冲/
-// cache 中，对 host 侧 D2H 不可见（表现为"任务正常完成但状态全 0"）。
-// 依据：<<<>>> 混合编程路径由 auto-gen 在每个 kernel wrapper 尾部自动追加同一序列
-// （asc-devkit extract_host_stub.py _generate_barrier_sync()，#if defined(__DAV_C310__)）；
-// ascc 插件（asc_dev_stub_generator.cpp）对 ASCEND950 无条件追加。本工程是 fatbin 纯设备
-// 编译、手写 __aicore__ kernel，不经过任何 stub 生成器，必须自己补上。
+// 标量写 UB 与 MTE3 读 UB 之间、以及 MTE3 读 UB 与下一次标量改写之间的硬同步
+static inline __aicore__ void PocStatusFlush(PocStatusWriter &w)
+{
+    if (w.gmAddr == 0) {
+        return;
+    }
+    constexpr TEventID evtSMte3 = 0;
+    constexpr TEventID evtMte3S = 1;
+    SetFlag<HardEvent::S_MTE3>(evtSMte3);
+    WaitFlag<HardEvent::S_MTE3>(evtSMte3);
+    GlobalTensor<uint64_t> gm;
+    gm.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(w.gmAddr), 8);
+    DataCopy(gm, w.ub, 8);  // UB -> GM 整页 64B
+    SetFlag<HardEvent::MTE3_S>(evtMte3S);
+    WaitFlag<HardEvent::MTE3_S>(evtMte3S);
+}
+
+static inline __aicore__ void PocStatusSet(PocStatusWriter &w, uint32_t idx, uint64_t value)
+{
+    if (w.gmAddr == 0) {
+        return;
+    }
+    w.ub(idx) = value;
+    PocStatusFlush(w);
+}
+
+// c310/A5 收尾 flush：对齐官方约定保留（<<<>>> 路径由 auto-gen 在每个 kernel wrapper
+// 尾部恒追加，asc-devkit extract_host_stub.py _generate_barrier_sync()，__DAV_C310__
+// 守卫；ascc 插件 asc_dev_stub_generator.cpp 对 ASCEND950 恒追加）。本工程是 fatbin 纯
+// 设备编译、不经过 stub 生成器，故手动补齐。注意：实测它并不能让 AIV 裸指针标量 GM store
+// 对 host 可见（a917503 实验证伪）——状态写回的可见性由 UB->GM DataCopy 路径保证，
+// 见上方 PocStatusWriter 注释。
 static inline __aicore__ void PocKernelEpilogue()
 {
 #if defined(__DAV_C310__)
@@ -50,27 +96,28 @@ static inline __aicore__ void PocKernelEpilogue()
 #endif
 }
 
-// 诊断：把 kernel 实际收到的参数回显到状态区 [1..4]，host 侧对照打印值可判别
+// 诊断：把 kernel 实际收到的参数回显到状态页 [1..4]，host 侧对照打印值可判别
 // "kernel 没跑" 与 "跑了但参数错位/为零" 两类故障
-static inline __aicore__ void PocEchoArgs(const PocKernelArgs *args)
+static inline __aicore__ void PocEchoArgs(PocStatusWriter &w, const PocKernelArgs *args)
 {
-    if (args->statusAddr != 0) {
-        volatile uint64_t *echo = reinterpret_cast<volatile uint64_t *>(args->statusAddr);
-        echo[1] = args->size;
-        echo[2] = args->chunkSize;
-        echo[3] = args->channel;
-        echo[4] = args->statusAddr;
+    if (w.gmAddr == 0) {
+        return;
     }
+    w.ub(1) = args->size;
+    w.ub(2) = args->chunkSize;
+    w.ub(3) = args->channel;
+    w.ub(4) = args->statusAddr;
+    PocStatusFlush(w);
 }
 
 // 传输公共实现：Init(512B UB workspace) -> 分块 Nbi(commit=false) -> Commit -> Drain
 // 错误码分段：0x1xx=Init 失败、0x2xx=分块 Nbi 失败（内嵌偏移与返回码）、0x3xx=Commit、0x4xx=Drain
-static inline __aicore__ int32_t PocTransferImpl(const PocKernelArgs *args, bool isRead)
+static inline __aicore__ int32_t PocTransferImpl(const PocKernelArgs *args, bool isRead,
+                                                 PocStatusWriter &w)
 {
-    TPipe pipe;
-    // 官方 01 示例：hcomm workspace 用 VECOUT 位置
+    // 官方 01 示例：hcomm workspace 用 VECOUT 位置；与状态页共用 w.pipe
     TBuf<TPosition::VECOUT> wsBuf;
-    pipe.InitBuffer(wsBuf, POC_HCOMM_WS_SIZE);
+    w.pipe.InitBuffer(wsBuf, POC_HCOMM_WS_SIZE);
     LocalTensor<uint8_t> ws = wsBuf.Get<uint8_t>();
 
     Hcomm<COMM_PROTOCOL_UBC_CTP> hcomm;
@@ -78,7 +125,7 @@ static inline __aicore__ int32_t PocTransferImpl(const PocKernelArgs *args, bool
     if (ret != 0) {
         return 0x100 + ret;  // Init 失败
     }
-    PocWriteStatus(args->statusAddr, POC_STAGE_INIT_OK);
+    PocStatusSet(w, 0, POC_STAGE_INIT_OK);
 
     const uint64_t chunk = (args->chunkSize != 0) ? args->chunkSize : POC_DEFAULT_CHUNK;
     uint64_t offset = 0;
@@ -101,14 +148,14 @@ static inline __aicore__ int32_t PocTransferImpl(const PocKernelArgs *args, bool
         offset += cur;
     }
 
-    PocWriteStatus(args->statusAddr, POC_STAGE_QUEUE_OK);
+    PocStatusSet(w, 0, POC_STAGE_QUEUE_OK);
 
     // 发布循环中攒下的 WQE
     ret = hcomm.Commit(args->channel);
     if (ret != 0) {
         return 0x300 + ret;  // Commit 失败
     }
-    PocWriteStatus(args->statusAddr, POC_STAGE_COMMIT_OK);
+    PocStatusSet(w, 0, POC_STAGE_COMMIT_OK);
     ret = hcomm.Drain(args->channel);
     if (ret != 0) {
         return 0x400 + ret;  // Drain 失败（超时/通道异常）
