@@ -55,7 +55,6 @@ struct PocOptions {
     std::string verify = "write";           // write | read
     uint32_t statusTimeoutSec = 120;
     std::string kernelImage;                // fatbin 路径，默认 <exe 同目录>/poc_hcomm_kernel.o
-    bool selfTest = false;                  // --self-test：不建链不碰 Hcomm，仅验证 fatbin->AIV->GM 链路
 };
 
 void Usage(const char *bin)
@@ -71,10 +70,7 @@ void Usage(const char *bin)
            "  --rootinfo PATH     rootinfo path (default /etc/hccl_rootinfo.json)\n"
            "  --verify write|read write: client->server write path; read: client pull from server\n"
            "  --status-timeout S  channel ready wait timeout seconds (default %u)\n"
-           "  --kernel-image PATH fatbin kernel image (default <exe_dir>/poc_hcomm_kernel.o)\n"
-           "  --self-test         自检模式：加载 fatbin 并启动 poc_selftest 内核（不建链、不碰 Hcomm），\n"
-           "                      自动跑 {file-lazy, mem-eager} x {attrs-on, attrs-off} 四格矩阵\n"
-           "                    用于切分「下发链路坏」与「hcomm 内核符号未解析」两类故障\n",
+           "  --kernel-image PATH fatbin kernel image (default <exe_dir>/poc_hcomm_kernel.o)\n",
            bin, POC_DEFAULT_OOB_PORT, (unsigned long long)POC_DEFAULT_BUF_SIZE,
            (unsigned long long)POC_DEFAULT_CHUNK, POC_DEFAULT_HCOMM_PORT, 120U);
 }
@@ -114,8 +110,6 @@ int ParseArgs(int argc, char **argv, PocOptions &opt)
             opt.statusTimeoutSec = static_cast<uint32_t>(atoi(next("--status-timeout")));
         } else if (k == "--kernel-image") {
             opt.kernelImage = next("--kernel-image");
-        } else if (k == "--self-test") {
-            opt.selfTest = true;
         } else if (k == "--help" || k == "-h") {
             Usage(argv[0]);
             exit(0);
@@ -213,12 +207,8 @@ int CheckBuffer(PocDynApi &api, void *devBuf, uint64_t size, uint64_t salt, size
         const uint64_t expect = ((uint64_t)i * 0x9E3779B97F4A7C15ULL) ^ salt;
         if (host[i] != expect) {
             firstBadIdx = i;
-            // dump 诊断：首个坏 word 与前 4 个 word 实际值，区分"未写入（全 0）/错位/内容翻转"
             printf("[POC][DEBUG] first mismatch at word %zu: actual=0x%016llx expected=0x%016llx\n", i,
                    (unsigned long long)host[i], (unsigned long long)expect);
-            for (size_t j = 0; j < 4 && j < words; j++) {
-                printf("[POC][DEBUG] word[%zu]=0x%016llx\n", j, (unsigned long long)host[j]);
-            }
             return 1;
         }
     }
@@ -253,10 +243,11 @@ std::string DefaultKernelImagePath()
     return dir + "/poc_hcomm_kernel.o";
 }
 
-// 方案 B 显式加载：aclrtCreateBinary -> aclrtBinaryLoad -> aclrtBinaryGetFunction(原名)。
+// fatbin 显式加载：优先 aclrtBinaryLoadFromFile + LAZY_LOAD（对齐 HCCL 950 AIV 生产路径
+// hccl_aiv_utils.cc），符号缺失或加载失败时回退 CreateBinary + BinaryLoad 内存路径。
 // binBuf 以出参带回并随 main 作用域存活，避免运行时在 load 之后再次访问二进制数据时悬空。
 int LoadPocKernel(PocDynApi &api, const std::string &imagePath, const char *funcName,
-                  std::vector<char> &binBuf, void *&binHandle, void *&func, bool tryFileLoad = true)
+                  std::vector<char> &binBuf, void *&binHandle, void *&func)
 {
     std::ifstream file(imagePath, std::ios::binary | std::ios::ate);
     if (!file.good()) {
@@ -272,10 +263,8 @@ int LoadPocKernel(PocDynApi &api, const std::string &imagePath, const char *func
     }
     printf("[POC] kernel image: %s (%zu bytes)\n", imagePath.c_str(), binBuf.size());
 
-    // 优先对齐 HCCL 950 AIV 生产路径（hccl_aiv_utils.cc）：aclrtBinaryLoadFromFile + LAZY_LOAD；
-    // 符号缺失或加载失败时回退 CreateBinary + BinaryLoad 内存路径
     int32_t ret = -1;
-    if (tryFileLoad && api.aclrtBinaryLoadFromFile != nullptr) {
+    if (api.aclrtBinaryLoadFromFile != nullptr) {
         PocBinaryLoadOption loadOpt {};
         loadOpt.type = POC_BINARY_LOAD_OPT_LAZY_LOAD;
         loadOpt.value.isLazyLoad = 1;
@@ -303,52 +292,29 @@ int LoadPocKernel(PocDynApi &api, const std::string &imagePath, const char *func
         }
         printf("[POC] kernel binary loaded via aclrtCreateBinary+aclrtBinaryLoad\n");
     }
-    // 诊断：打印 fatbin 中注册的 Function 数量（符号缺失的旧版本 runtime 上自动跳过）
-    if (api.aclrtBinaryGetFunctionCount != nullptr) {
-        uint32_t fnCount = 0;
-        if (api.aclrtBinaryGetFunctionCount(binHandle, &fnCount) == 0) {
-            printf("[POC] kernel image functions: %u\n", fnCount);
-        }
-    }
     ret = api.aclrtBinaryGetFunction(binHandle, funcName, &func);
     if (ret != 0 || func == nullptr) {
-        // 若再次见到 107000：先用 readelf -sW 确认 fatbin 中是否存在同名的 GLOBAL FUNC 符号
+        // 若见到 107000：先用 readelf -sW 确认 fatbin 中是否存在同名的 GLOBAL FUNC 符号
         printf("[POC][ERROR] aclrtBinaryGetFunction(%s) ret=%d\n", funcName, ret);
         return -1;
     }
     printf("[POC] kernel function ready: %s\n", funcName);
-    // 诊断：runtime 视角的参数布局。实测 __CCE_KernelArgSize NOTE = 用户参数 + 8B
-    // overflow 尾槽（selftest 16B->24；拍平后的 hcomm kernel 48B->56），且 by-value
-    // 结构体参数会被 ABI 降级为 8B 指针；host 侧 argsSize 必须覆盖尾槽
-    if (api.aclrtFunctionGetParamCount != nullptr && api.aclrtFunctionGetParamInfo != nullptr) {
-        size_t paramCount = 0;
-        if (api.aclrtFunctionGetParamCount(func, &paramCount) == 0) {
-            printf("[POC] kernel param count: %zu (expect %zu user + 1 overflow tail)\n",
-                   paramCount, sizeof(PocKernelArgs) / sizeof(uint64_t));
-            for (size_t i = 0; i < paramCount && i < 4; ++i) {
-                size_t off = 0, sz = 0;
-                if (api.aclrtFunctionGetParamInfo(func, i, &off, &sz) == 0) {
-                    printf("[POC]   param[%zu]: offset=%zu size=%zu\n", i, off, sz);
-                }
-            }
-        }
-    }
     return 0;
 }
 
-// 诊断：状态/阶段标记解码（与 common/poc_common.h、kernel/poc_kernel_common.h 保持一致）
+// kernel 状态/阶段标记解码（与 common/poc_common.h 保持一致）
 std::string DecodeKernelStatus(uint64_t st)
 {
     char buf[128];
     switch (st) {
-        case POC_STATUS_PENDING:  // 0：连入口标记都没写上
+        case POC_STATUS_PENDING:
             return "kernel 未执行（或 statusAddr 对 kernel 不可见/为 0）";
         case POC_STATUS_OK:
             return "OK";
         case POC_STAGE_ENTERED:
-            return "已进 kernel 入口，停在 Hcomm Init 之前/之中（疑似 Init 卡死或设备异常）";
+            return "已进 kernel 入口，停在 Hcomm Init 之前/之中";
         case POC_STAGE_INIT_OK:
-            return "Init 成功，停在分块 Nbi 循环中（疑似 WriteNbi/ReadNbi 卡死）";
+            return "Init 成功，停在分块 Nbi 循环中";
         case POC_STAGE_QUEUE_OK:
             return "Nbi 全部入队，停在 Commit 之前/之中";
         case POC_STAGE_COMMIT_OK:
@@ -368,11 +334,10 @@ std::string DecodeKernelStatus(uint64_t st)
 }
 
 // AIV 引擎下发：attr 取值复刻 CANN 开源 acl_rt.h（SCHEM_MODE=1 / ENGINE_TYPE=3 / AIV=1 /
-// TIMEOUT_US=8），并对齐 HCCL 950 AIV 生产下发（hicann/hcomm hccl_aiv_utils.cc 的三 attr 组合）
+// TIMEOUT_US=8），三 attr 组合对齐 HCCL 950 AIV 生产下发（hicann/hcomm
+// hccl_aiv_utils.cc::ExecuteKernelLaunchInner）；TIMEOUT_US 兜底防永久 hang
 int LaunchPocKernel(PocDynApi &api, void *func, void *stream, void *hostArgs, size_t argsSize)
 {
-    // 三 attr 完全对齐 HCCL 950 AIV 生产下发（hccl_aiv_utils.cc::ExecuteKernelLaunchInner）：
-    // SCHEM_MODE=1 + TIMEOUT_US（兜底防永久 hang）+ ENGINE_TYPE=AIV
     constexpr uint32_t POC_KERNEL_TIMEOUT_US = 60U * 1000U * 1000U;  // 60s
     PocLaunchKernelAttr attrs[3] {};
     attrs[0].id = POC_LAUNCH_ATTR_SCHEM_MODE;
@@ -416,7 +381,7 @@ int main(int argc, char **argv)
     std::vector<char> kernelBin;      // fatbin 文件内容，随 main 作用域存活
     void *devBuf = nullptr;
     void *statusBuf = nullptr;
-    void *overflowBuf = nullptr;      // kernel 参数块 overflow 尾槽（8B 设备 buffer，复刻 <<<>>> stub）
+    void *overflowBuf = nullptr;      // kernel 参数块 overflow 尾槽（8B 设备 buffer）
     EndpointHandle endpoint = nullptr;
     HcommMemHandle memHandle = nullptr;
     void *memDesc = nullptr;
@@ -480,114 +445,6 @@ int main(int argc, char **argv)
         printf("[POC] userId=%d phyId=%d sdid=%u serverId=%u superPodId=%u mainboardId=%lld\n", userId, phyId, sdid,
                serverId, superPodId, static_cast<long long>(mainboardId));
 
-        // ── 自检模式（--self-test）：不建链、不碰 Hcomm，仅验证 fatbin -> AIV 下发 -> GM 写回 ──
-        // 用于切分故障域：自检 PASS 但 hcomm 内核不执行 => hcomm 内核设备侧符号问题；
-        // 自检也 FAIL => fatbin 格式/下发链路本身问题
-        if (opt.selfTest) {
-            ret = api.aclrtMalloc(&statusBuf, 64, 0);
-            if (ret != 0 || statusBuf == nullptr) {
-                printf("[POC][ERROR] aclrtMalloc status ret=%d\n", ret);
-                break;
-            }
-            (void)api.aclrtMemset(statusBuf, 64, 0, 64);
-            // overflow 尾槽 buffer：__CCE_KernelArgSize 实测含 8B 尾参（selftest NOTE=24=16+8），
-            // hostArgs 须携带尾槽，内容为 8B 设备 buffer 指针（复刻 <<<>>> stub 的 AllocAscendMemDevice）
-            ret = api.aclrtMalloc(&overflowBuf, 8, 0);
-            if (ret != 0 || overflowBuf == nullptr) {
-                printf("[POC][ERROR] aclrtMalloc overflow ret=%d\n", ret);
-                break;
-            }
-            (void)api.aclrtMemset(overflowBuf, 8, 0, 8);
-            ret = api.aclrtCreateStream(&stream);
-            if (ret != 0 || stream == nullptr) {
-                printf("[POC][ERROR] aclrtCreateStream ret=%d\n", ret);
-                break;
-            }
-            const std::string kernelImage =
-                opt.kernelImage.empty() ? DefaultKernelImagePath() : opt.kernelImage;
-            constexpr uint64_t POC_SELFTEST_MAGIC = 0x5154A5155154A515ULL;
-            constexpr uint32_t POC_KERNEL_TIMEOUT_US = 60U * 1000U * 1000U;  // 60s
-            // 自检矩阵（2x2x2）：{file LAZY_LOAD, mem CreateBinary+BinaryLoad}
-            //   x {3 attrs, no attrs} x {args 带 8B overflow 尾槽, 不带尾槽}
-            // 依据：__CCE_KernelArgSize 实测 selftest NOTE=24=16+8（工具链在非 cpu 模式恒追加
-            // GM_ADDR overflow_status 尾参），HCCL 950 生产 argsSize 亦与 NOTE 口径一致（176），
-            // 预期 tail-on 格 PASS、tail-off 格 FAIL（hostArgsSize < NOTE 被 runtime 静默丢弃）。
-            int passMask = 0;
-            for (int useFileLoad = 1; useFileLoad >= 0; --useFileLoad) {
-                for (int useAttrs = 1; useAttrs >= 0; --useAttrs) {
-                    for (int useTail = 1; useTail >= 0; --useTail) {
-                        const int cell = (useFileLoad << 2) | (useAttrs << 1) | useTail;
-                        const char *loadTag = useFileLoad ? "file-lazy" : "mem-eager";
-                        const char *attrTag = useAttrs ? "attrs-on" : "attrs-off";
-                        const char *tailTag = useTail ? "tail-on" : "tail-off";
-                        (void)api.aclrtMemset(statusBuf, 64, 0, 64);
-                        void *oneBinHandle = nullptr;
-                        void *fn = nullptr;
-                        std::vector<char> oneBin;
-                        if (LoadPocKernel(api, kernelImage, "poc_selftest", oneBin, oneBinHandle, fn,
-                                          useFileLoad != 0) != 0) {
-                            printf("[POC] self-test[%s %s %s]: LOAD FAIL\n", loadTag, attrTag, tailTag);
-                            continue;
-                        }
-                        uint64_t selfArgs[3] = {reinterpret_cast<uint64_t>(statusBuf), POC_SELFTEST_MAGIC,
-                                                reinterpret_cast<uint64_t>(overflowBuf)};
-                        const size_t selfArgsSize = useTail ? (3 * sizeof(uint64_t)) : (2 * sizeof(uint64_t));
-                        PocLaunchKernelAttr attrs[3] {};
-                        attrs[0].id = POC_LAUNCH_ATTR_SCHEM_MODE;
-                        attrs[0].value.schemMode = 1;
-                        attrs[1].id = POC_LAUNCH_ATTR_TIMEOUT_US;
-                        attrs[1].value.timeoutUs.timeoutLow = POC_KERNEL_TIMEOUT_US;
-                        attrs[1].value.timeoutUs.timeoutHigh = 0;
-                        attrs[2].id = POC_LAUNCH_ATTR_ENGINE_TYPE;
-                        attrs[2].value.engineType = POC_ENGINE_TYPE_AIV;
-                        PocLaunchKernelCfg cfg {attrs, 3};
-                        const uint64_t t0 = PocNowUs();
-                        ret = api.aclrtLaunchKernelWithHostArgs(fn, 1, stream, useAttrs ? &cfg : nullptr,
-                                                                selfArgs, selfArgsSize, nullptr, 0);
-                        if (ret != 0) {
-                            printf("[POC] self-test[%s %s %s]: launch ret=%d\n", loadTag, attrTag, tailTag, ret);
-                            (void)api.aclrtBinaryUnLoad(oneBinHandle);
-                            continue;
-                        }
-                        ret = api.aclrtSynchronizeStream(stream);
-                        const uint64_t t1 = PocNowUs();
-                        if (ret != 0) {
-                            printf("[POC] self-test[%s %s %s]: sync ret=%d\n", loadTag, attrTag, tailTag, ret);
-                            (void)api.aclrtBinaryUnLoad(oneBinHandle);
-                            continue;
-                        }
-                        uint64_t selfDump[8] = {0};
-                        ret = api.aclrtMemcpy(selfDump, sizeof(selfDump), statusBuf, sizeof(selfDump), 2 /*D2H*/);
-                        if (ret != 0) {
-                            printf("[POC] self-test[%s %s %s]: readback ret=%d\n", loadTag, attrTag, tailTag, ret);
-                            (void)api.aclrtBinaryUnLoad(oneBinHandle);
-                            continue;
-                        }
-                        const bool pass = (selfDump[0] == POC_SELFTEST_MAGIC);
-                        printf("[POC] self-test[%s %s %s]: %s (%llu us, status[0]=%#llx)\n", loadTag, attrTag,
-                               tailTag, pass ? "PASS" : "FAIL", (unsigned long long)(t1 - t0),
-                               (unsigned long long)selfDump[0]);
-                        if (pass) {
-                            passMask |= (1 << cell);
-                        }
-                        (void)api.aclrtBinaryUnLoad(oneBinHandle);
-                    }
-                }
-            }
-            if (passMask != 0) {
-                printf("[POC] SELF-TEST PASS mask=%#x（bitN = fileLoad<<2 | attrs<<1 | tail）：\n"
-                       "[POC] 预期 tail-on 各格 PASS；按 PASS 格的 load/attrs 组合核对主路径；\n"
-                       "[POC] hcomm 内核（参数已拍平为 6xuint64 + 尾槽 = 56B）应随本修复一并恢复\n", passMask);
-                exitCode = 0;
-            } else {
-                printf("[POC][ERROR] SELF-TEST FAIL（8/8 组合均未执行 kernel，含 tail-on），尾槽假设被证伪，请收集：\n"
-                       "[POC]   1) build.sh 末尾的 fatbin UNDEF 符号输出\n"
-                       "[POC]   2) readelf -x __CCE_KernelArgSize / .ascend.meta.* 复测\n"
-                       "[POC]   3) ASCEND_GLOBAL_LOG_LEVEL=0 ASCEND_SLOG_PRINT_TO_STDOUT=1 重跑本自检的完整日志\n");
-            }
-            break;
-        }
-
         // ── 3. EID ──
         std::array<uint8_t, POC_EID_LEN> eid {};
         if (PocGetEid(opt.eidHex, opt.rootinfo, static_cast<uint32_t>(phyId), eid) != 0) {
@@ -629,8 +486,8 @@ int main(int argc, char **argv)
             break;
         }
         (void)api.aclrtMemset(statusBuf, 64, 0, 64);
-        // kernel 参数块 overflow 尾槽（8B 设备 buffer）：__CCE_KernelArgSize NOTE 计入该尾参，
-        // hostArgs 长度须覆盖（复刻 <<<>>> stub 的 AllocAscendMemDevice 行为）
+        // kernel 参数块 overflow 尾槽（8B 设备 buffer）：工具链为 kernel 恒追加尾参，
+        // hostArgs 长度须覆盖
         ret = api.aclrtMalloc(&overflowBuf, 8, 0);
         if (ret != 0 || overflowBuf == nullptr) {
             printf("[POC][ERROR] aclrtMalloc overflow ret=%d\n", ret);
@@ -777,16 +634,15 @@ int main(int argc, char **argv)
                 break;
             }
 
-            // 参数拍平为 6 个 uint64（bisheng ABI 会把 by-value 结构体降级为指针传递，
-            // 见 kernel/poc_hcomm_write.cpp 注释）+ 8B overflow 尾槽 = 56B，
-            // 与 fatbin __CCE_KernelArgSize NOTE（6x8+8=56）逐字节对齐
+            // 参数拍平为 6 个 uint64（与 kernel 签名一致）+ 8B overflow 尾槽 = 56B，
+            // 与 fatbin __CCE_KernelArgSize NOTE 口径对齐
             uint64_t kargs[7] = {channel,
-                                       reinterpret_cast<uint64_t>(devBuf),
-                                       reinterpret_cast<uint64_t>(remoteMem.addr),
-                                       opt.size,
-                                       opt.chunk,
-                                       reinterpret_cast<uint64_t>(statusBuf),
-                                       reinterpret_cast<uint64_t>(overflowBuf)};
+                                 reinterpret_cast<uint64_t>(devBuf),
+                                 reinterpret_cast<uint64_t>(remoteMem.addr),
+                                 opt.size,
+                                 opt.chunk,
+                                 reinterpret_cast<uint64_t>(statusBuf),
+                                 reinterpret_cast<uint64_t>(overflowBuf)};
             printf("[POC] launch args: channel=%#llx local=%#llx remote=%#llx size=%llu chunk=%llu status=%#llx\n",
                    (unsigned long long)kargs[0], (unsigned long long)kargs[1],
                    (unsigned long long)kargs[2], (unsigned long long)kargs[3],
@@ -811,9 +667,8 @@ int main(int argc, char **argv)
             }
             const uint64_t t1 = PocNowUs();
 
-            // 状态区共 64B：[0]=状态/阶段标记，[1..4]=kernel 回显的实际收参（诊断）
-            uint64_t statusDump[8] = {0};
-            ret = api.aclrtMemcpy(statusDump, sizeof(statusDump), statusBuf, sizeof(statusDump), 2 /*D2H*/);
+            uint64_t statusHost = 0;
+            ret = api.aclrtMemcpy(&statusHost, sizeof(statusHost), statusBuf, sizeof(statusHost), 2 /*D2H*/);
             if (ret != 0) {
                 printf("[POC][ERROR] read kernel status ret=%d\n", ret);
                 if (opt.verify == "read") {
@@ -821,12 +676,8 @@ int main(int argc, char **argv)
                 }
                 break;
             }
-            const uint64_t statusHost = statusDump[0];
             printf("[POC] kernel done in %llu us, status=%llu (%s)\n", (unsigned long long)(t1 - t0),
                    (unsigned long long)statusHost, DecodeKernelStatus(statusHost).c_str());
-            printf("[POC] kernel echo args: size=%llu chunk=%llu channel=%#llx statusAddr=%#llx\n",
-                   (unsigned long long)statusDump[1], (unsigned long long)statusDump[2],
-                   (unsigned long long)statusDump[3], (unsigned long long)statusDump[4]);
             if (statusHost != POC_STATUS_OK) {
                 printf("[POC][ERROR] kernel status not OK: 0x%llx (%s)\n", (unsigned long long)statusHost,
                        DecodeKernelStatus(statusHost).c_str());

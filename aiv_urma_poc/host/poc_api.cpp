@@ -55,9 +55,6 @@ int PocDynApi::Load(const std::string &ascendHome)
     POC_DLSYM(aclrtBinaryUnLoad, aclHandle, "aclrtBinaryUnLoad");
     POC_DLSYM(aclrtBinaryGetFunction, aclHandle, "aclrtBinaryGetFunction");
     POC_DLSYM(aclrtLaunchKernelWithHostArgs, aclHandle, "aclrtLaunchKernelWithHostArgs");
-    POC_DLSYM_OPT(aclrtBinaryGetFunctionCount, aclHandle, "aclrtBinaryGetFunctionCount");
-    POC_DLSYM_OPT(aclrtFunctionGetParamCount, aclHandle, "aclrtFunctionGetParamCount");
-    POC_DLSYM_OPT(aclrtFunctionGetParamInfo, aclHandle, "aclrtFunctionGetParamInfo");
 
     void *hcommHandle = nullptr;
     libPath = ascendHome + "/lib64/libhcomm.so";

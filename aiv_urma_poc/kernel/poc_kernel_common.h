@@ -27,14 +27,10 @@ using namespace AscendC;
 
 constexpr uint32_t POC_HCOMM_WS_SIZE = 512;  // HCOMM_URMA_TMP_BUF_SIZE，32 字节对齐由 TBuf 保证
 
-// 状态页 UB 镜像 + DataCopy 整页刷出（950/AIV 写回铁律）：
-// 官方 fatbin 样例 6_memory_loaded_vector_add 在同机（Ascend950PR_9589 / CANN 9.1.0）实测
-// PASS，其唯一写回路径是 UB(LocalTensor) -> GM 的 DataCopy（MTE3 引擎）；
-// 而本 PoC 此前的 *(volatile uint64_t*)addr 裸指针标量 GM 写对 host D2H 恒不可见
-//（加 pipe_barrier/dsb/dci 冲刷同样无效，a917503 实验证伪）——AIV 核内标量 store 与
-// MTE3 写回是两条硬件路径，前者在 950 上不作为对 host 可见的写回路径使用。
-// DataCopy 最小粒度 32B，故状态页（64B = 8 x u64：[0]=status [1..4]=echo）整页镜像在 UB，
-// 每次更新整页刷出。
+// 状态页写回：AIV 核内裸指针标量 GM store 对 host 不可见（950 平台约束），状态统一经
+// UB 镜像 + DataCopy（MTE3）写回 GM——与官方算子的标准写回路径一致。DataCopy 最小粒度
+// 32B，故状态页 64B（8 x u64）整页镜像在 UB，每次更新整页刷出，标量写 UB 与 MTE3 之间
+// 以 SetFlag/WaitFlag 硬同步。
 struct PocStatusWriter {
     TPipe pipe;                     // 与传输 workspace 共用一个 TPipe（AscendC 惯例单 pipe）
     TBuf<TPosition::VECOUT> buf;    // 64B 状态页镜像
@@ -81,12 +77,9 @@ static inline __aicore__ void PocStatusSet(PocStatusWriter &w, uint32_t idx, uin
     PocStatusFlush(w);
 }
 
-// c310/A5 收尾 flush：对齐官方约定保留（<<<>>> 路径由 auto-gen 在每个 kernel wrapper
-// 尾部恒追加，asc-devkit extract_host_stub.py _generate_barrier_sync()，__DAV_C310__
-// 守卫；ascc 插件 asc_dev_stub_generator.cpp 对 ASCEND950 恒追加）。本工程是 fatbin 纯
-// 设备编译、不经过 stub 生成器，故手动补齐。注意：实测它并不能让 AIV 裸指针标量 GM store
-// 对 host 可见（a917503 实验证伪）——状态写回的可见性由 UB->GM DataCopy 路径保证，
-// 见上方 PocStatusWriter 注释。
+// c310 收尾 flush：950 平台 kernel 收尾约定（auto-gen/ascc stub 生成器对每个 kernel
+// 恒追加 pipe_barrier/dsb/dci 同序列）。本工程为 fatbin 纯设备编译、不经过 stub 生成器，
+// 手动补齐以对齐平台约定。
 static inline __aicore__ void PocKernelEpilogue()
 {
 #if defined(__DAV_C310__)
@@ -94,20 +87,6 @@ static inline __aicore__ void PocKernelEpilogue()
     dsb(mem_dsb_t::DSB_ALL);
     dci();
 #endif
-}
-
-// 诊断：把 kernel 实际收到的参数回显到状态页 [1..4]，host 侧对照打印值可判别
-// "kernel 没跑" 与 "跑了但参数错位/为零" 两类故障
-static inline __aicore__ void PocEchoArgs(PocStatusWriter &w, const PocKernelArgs *args)
-{
-    if (w.gmAddr == 0) {
-        return;
-    }
-    w.ub(1) = args->size;
-    w.ub(2) = args->chunkSize;
-    w.ub(3) = args->channel;
-    w.ub(4) = args->statusAddr;
-    PocStatusFlush(w);
 }
 
 // 传输公共实现：Init(512B UB workspace) -> 分块 Nbi(commit=false) -> Commit -> Drain

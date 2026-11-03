@@ -37,10 +37,6 @@ constexpr uint64_t POC_STAGE_INIT_OK = 0xE2;    // Hcomm Init 成功
 constexpr uint64_t POC_STAGE_QUEUE_OK = 0xE3;   // 分块 WriteNbi/ReadNbi 全部入队
 constexpr uint64_t POC_STAGE_COMMIT_OK = 0xE4;  // Commit 成功（Drain 前）
 
-// 状态区布局（host 侧 statusBuf 共 64B，kernel 仅当 statusAddr!=0 时写）：
-//   [0] 状态/阶段标记；[1..4] 诊断回显 = kernel 实际收到的 size/chunkSize/channel/statusAddr
-constexpr uint32_t POC_STATUS_ECHO_WORDS = 4;
-
 // 默认参数
 constexpr uint64_t POC_DEFAULT_BUF_SIZE = 1ULL << 20;  // 1MB
 constexpr uint64_t POC_DEFAULT_CHUNK = 64ULL << 10;    // 64KB

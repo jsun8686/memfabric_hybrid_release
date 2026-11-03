@@ -24,7 +24,7 @@
 
 #include "poc_kernel_common.h"
 
-// 参数拍平原因见 poc_hcomm_write.cpp 注释（bisheng ABI 结构体指针降级 + overflow 尾槽）。
+// 参数拍平原因见 poc_hcomm_write.cpp 注释。
 extern "C" __global__ __aicore__ void poc_hcomm_read(uint64_t channel, uint64_t localAddr,
                                                      uint64_t remoteAddr, uint64_t size,
                                                      uint64_t chunkSize, uint64_t statusAddr)
@@ -39,12 +39,11 @@ extern "C" __global__ __aicore__ void poc_hcomm_read(uint64_t channel, uint64_t 
         args.statusAddr = statusAddr;
         PocStatusWriter st;
         PocStatusInit(st, args.statusAddr);
-        PocStatusSet(st, 0, POC_STAGE_ENTERED);  // 诊断：非 0 入口标记
-        PocEchoArgs(st, &args);                  // 诊断：回显 kernel 实际收到的参数
+        PocStatusSet(st, 0, POC_STAGE_ENTERED);
         const int32_t ret = PocTransferImpl(&args, true, st);
         PocStatusSet(st, 0, (ret == 0) ? POC_STATUS_OK : (POC_STATUS_FAIL_BASE + ret));
     }
-    PocKernelEpilogue();  // c310 收尾 flush：GM 写对 host 可见的必要条件，所有核无条件执行
+    PocKernelEpilogue();  // c310 平台收尾约定，所有核无条件执行
 }
 // host 侧启动：poc_main.cpp 显式 aclrtBinaryLoad + aclrtBinaryGetFunction("poc_hcomm_read")
 // + aclrtLaunchKernelWithHostArgs(AIV)，本文件不再提供 <<<>>> 封装（fatbin 为纯设备编译）

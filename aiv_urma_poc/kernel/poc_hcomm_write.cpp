@@ -24,10 +24,8 @@
 
 #include "poc_kernel_common.h"
 
-// 参数必须拍平为标量（对齐 HCCL 950 AIV 内核风格）：bisheng ABI 会把 by-value 的
-// 48B 结构体参数降级为 8B 指针传递（fatbin 的 __CCE_KernelArgSize NOTE 实测 = 16 =
-// 8B 指针 + 8B overflow 尾槽，而非 48+8），host 按结构体内联传参会被 runtime 截断/
-// 丢弃，kernel 拿不到有效参数。拍平后 NOTE = 6x8 + 8 尾槽 = 56B，host 按 56B 传参。
+// 参数拍平为标量：bisheng 会把 by-value 结构体参数降级为指针传递，故 kernel 签名
+// 使用扁平标量，函数体内再组装 PocKernelArgs。
 extern "C" __global__ __aicore__ void poc_hcomm_write(uint64_t channel, uint64_t localAddr,
                                                       uint64_t remoteAddr, uint64_t size,
                                                       uint64_t chunkSize, uint64_t statusAddr)
@@ -42,12 +40,11 @@ extern "C" __global__ __aicore__ void poc_hcomm_write(uint64_t channel, uint64_t
         args.statusAddr = statusAddr;
         PocStatusWriter st;
         PocStatusInit(st, args.statusAddr);
-        PocStatusSet(st, 0, POC_STAGE_ENTERED);  // 诊断：非 0 入口标记
-        PocEchoArgs(st, &args);                  // 诊断：回显 kernel 实际收到的参数
+        PocStatusSet(st, 0, POC_STAGE_ENTERED);
         const int32_t ret = PocTransferImpl(&args, false, st);
         PocStatusSet(st, 0, (ret == 0) ? POC_STATUS_OK : (POC_STATUS_FAIL_BASE + ret));
     }
-    PocKernelEpilogue();  // c310 收尾 flush：GM 写对 host 可见的必要条件，所有核无条件执行
+    PocKernelEpilogue();  // c310 平台收尾约定，所有核无条件执行
 }
 // host 侧启动：poc_main.cpp 显式 aclrtBinaryLoad + aclrtBinaryGetFunction("poc_hcomm_write")
 // + aclrtLaunchKernelWithHostArgs(AIV)，本文件不再提供 <<<>>> 封装（fatbin 为纯设备编译）

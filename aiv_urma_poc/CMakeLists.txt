@@ -79,7 +79,6 @@ message(STATUS "poc: ASC_DEVKIT_ROOT = ${ASC_DEVKIT_ROOT}")
 ascendc_fatbin_library(poc_hcomm_kernel
     ${CMAKE_CURRENT_SOURCE_DIR}/kernel/poc_hcomm_write.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/kernel/poc_hcomm_read.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/kernel/poc_selftest.cpp
 )
 if(COMMAND ascendc_include_directories)
     # 注意签名：ascendc_include_directories(<target> <scope> <dirs...>)，
