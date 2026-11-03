@@ -3,6 +3,12 @@
 在 A5（Ascend 950PR/DT，CANN >= 9.1.0）双机上验证 **Host 纯 HCOMM 控制面 + AIV 内核直驱 URMA（UB_CTP）** 数据通路，
 为 MemFabric xcopy 数据面引入 AIV 引擎（阶段 1）提供前置依据。
 
+> **状态（2026-11-02）：方案 B 已在 A5 真机（Ascend950PR_9589 / CANN 9.1.0）回归全 PASS** ——
+> READ 1MB（单 WQE 1MB、64KB×16、4KB×256 单 Commit 三种分块）与 WRITE 1MB/64KB 双向数据校验通过，
+> fatbin 加载/下发自检八格矩阵 8/8 PASS。两个关键工程结论见 FAQ：
+> ① AIV 核内裸指针标量 GM 写对 host 不可见，状态写回必须走 UB+DataCopy（MTE3）；
+> ② kernel 参数须拍平为标量（bisheng 结构体参数指针降级），NOTE 口径含 8B overflow 尾槽。
+
 ## 验证目标
 
 | # | 目标 | 判定 |
@@ -21,9 +27,10 @@ aiv_urma_poc/
 ├── common/poc_common.h       # host/kernel 共用参数布局
 ├── include/hcomm/            # hcomm_res.h / hcomm_res_defs.h（拷贝自 hcomm 仓，securec 换 shim）
 ├── kernel/
-│   ├── poc_kernel_common.h   # 内核公共实现（传输循环/状态写回）
+│   ├── poc_kernel_common.h   # 内核公共实现（传输循环/状态写回：UB 镜像 + DataCopy MTE3）
 │   ├── poc_hcomm_write.cpp   # AIV 写内核（fatbin 设备侧编译单元，符号原名 poc_hcomm_write）
-│   └── poc_hcomm_read.cpp    # AIV 读内核（符号原名 poc_hcomm_read）
+│   ├── poc_hcomm_read.cpp    # AIV 读内核（符号原名 poc_hcomm_read）
+│   └── poc_selftest.cpp      # 自检内核（最小 GM 写回，--self-test 八格矩阵用）
 ├── host/
 │   ├── poc_main.cpp          # 主流程（server/client 双角色；client 显式加载 fatbin 并 AIV 下发）
 │   ├── poc_api.h/.cpp        # dlopen libascendcl/libhcomm（控制面 + 二进制加载/启动符号）
@@ -135,9 +142,10 @@ read 路径（client AIV 内核从 server 拉）：
 | `HcommEndpointCreate ret!=0` | EID/协议与组网不符：核对 rootinfo 中 EID 归属、两机是否 UB_CTP 互联（PoC 不覆盖 UB_RTP/超节点 PC16 组网） |
 | `channel not ready` | 看 hcomm 日志（`ASCEND_GLOBAL_LOG_LEVEL=0` 前置运行）；核对两端 `--hcomm-port` 一致、server 侧端口可达；`channelName` 两端一致 |
 | `kernel status=0x1xxx` | 低 12 位为内核内错误码段：0x1xx=Init 失败、0x2xx=WriteNbi/ReadNbi 失败（含偏移信息）、0x3xx=Commit 失败、0x4xx=Drain 失败/超时 |
-| `kernel done ..., status=0` | 连入口标记都没写上 = kernel 未执行或 statusAddr 不可见。内核按阶段回写非 0 标记（0xE1=已入内核、0xE2=Init 成功、0xE3=Nbi 全部入队、0xE4=Commit 成功），host 日志会直接打印阶段解码；同时对照 `launch args` 与 `kernel echo args` 两行：回显全 0 说明 kernel 没跑，回显与 launch args 不一致说明参数错位。加载阶段的 `kernel param count/offset/size` 探针用于核对 host argsSize 与设备签名（含工具链 overflow_status 尾参）是否匹配 |
-| write 校验 FAIL | 降低 `--size/--chunk` 复测；对照 `--verify read` 是否同样失败以区分方向性问题 |
-| kernel 注册成功但完全不执行（阶段标记/回显全 0） | **已定位（A5 实测）**：bisheng ABI 会把 by-value 结构体参数降级为 8B 指针传递，且非 cpu 模式工具链在 kernel 签名尾部恒追加 8B `GM_ADDR overflow_status` 尾参——fatbin 的 `__CCE_KernelArgSize` NOTE 记录的是"设备侧参数块尺寸（含尾槽）"（可用 `readelf -x __CCE_KernelArgSize <fatbin>` 实测），host 的 hostArgs/argsSize 必须与该口径一致，否则任务被 runtime 静默丢弃（launch/sync 均 ret=0）。修法：kernel 参数拍平为标量（对齐 HCCL 950 AIV 内核），hostArgs = N 个 8B 参数 + 8B 尾槽（尾槽内容 = 8B 设备 buffer 指针）。自检 `./build/poc/poc_aiv_urma --role client --self-test --device <id>` 跑 {file-lazy,mem-eager}×{attrs-on,off}×{tail-on,off} 八格矩阵，预期 tail-on 格 PASS。仍全 FAIL 则收集 `ASCEND_GLOBAL_LOG_LEVEL=0 ASCEND_SLOG_PRINT_TO_STDOUT=1` 日志 |
+| `kernel done ..., status=0` | **根因已结案（见下行）**：AIV 核内裸指针标量 GM store 对 host D2H 不可见，kernel 其实执行了但写回读不到。内核按阶段经 UB+DataCopy 回写非 0 标记（0xE1=已入内核、0xE2=Init 成功、0xE3=Nbi 全部入队、0xE4=Commit 成功），host 日志会直接打印阶段解码；同时对照 `launch args` 与 `kernel echo args` 两行：回显全 0 = 写回路径问题，回显与 launch args 不一致 = 参数错位 |
+| write 校验 FAIL | 降低 `--size/--chunk` 复测；对照 `--verify read` 是否同样失败以区分方向性问题；**先 `npu-smi` 确认两卡空闲**——卡被他者占用时 Commit/Drain 可能返回失败（如 0x3ff），属环境噪声而非链路故障 |
+| kernel 注册成功但完全不执行（阶段标记/回显全 0） | **已结案（A5 实测，WRITE/READ 三配置回归全 PASS）**：真根因是 **AIV 核内裸指针标量 GM store（`*(volatile uint64_t*)addr = v`）对 host D2H 恒不可见**——任务实际正常下发并完成（slog：LoadArgsWithCopy 成功、SQE 下发 drvRet=0、task completed），但 host 永远读不到写回值，追加 c310 收尾 `pipe_barrier/dsb/dci` 也不能使其可见（实验证伪）。**修法：状态/回显统一走 UB 镜像 + `DataCopy` UB→GM（MTE3）写回**——与官方 fatbin 样例 `6_memory_loaded_vector_add` 的唯一写回路径一致（同机实测 PASS）；DataCopy 最小粒度 32B，故状态页 64B（8×u64）整页刷出，标量写 UB 与 MTE3 读 UB 之间需 `SetFlag/WaitFlag<HardEvent::S_MTE3>` 硬同步。排查中实验排除的因素：argsSize 尾槽口径、launch attrs、加载路径（{file-lazy,mem-eager}×{attrs-on,off}×{tail-on,off} 八格矩阵全 PASS，自检：`./build/poc/poc_aiv_urma --role client --self-test --device <id>`）。kernel 参数拍平为标量仍保留（bisheng 会把 by-value 结构体降级为指针传递，拍平后 `__CCE_KernelArgSize` NOTE 与 hostArgs 口径一致） |
+| 单 WQE 长度上限 | URMA 协议上限**严格小于 256 MiB**（hicann/ops-transformer 生产代码：`256MiB-512` 分块，512B 对齐）；A5 实测单 WQE 1MB 直接通过。历史上一次"1MB Commit 失败 0x3ff"为卡被占用的环境性失败，与长度无关 |
 
 ## 与 MemFabric 阶段 1 的衔接
 
